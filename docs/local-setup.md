@@ -53,6 +53,11 @@ make up
 
 ## 5. Connect your IDE
 
+> **Auth:** If `AUTH_ADMIN_KEY` is set in `.env`, every client must send that key
+> in the `X-Auth-Key` header (configurable via `AUTH_HEADER_NAME`) or as
+> `Authorization: Bearer <key>`. Leave `AUTH_ADMIN_KEY` empty to disable auth.
+> `/health` is always public.
+
 ### Augment Code
 
 Add to your Augment MCP settings:
@@ -62,7 +67,8 @@ Add to your Augment MCP settings:
   "mcpServers": {
     "Synatyx": {
       "url": "http://localhost:9000/mcp/sse",
-      "type": "sse"
+      "type": "sse",
+      "headers": { "X-Auth-Key": "your-admin-key" }
     }
   }
 }
@@ -76,7 +82,8 @@ Add to `.cursor/mcp.json` in your project root:
 {
   "mcpServers": {
     "synatyx": {
-      "url": "http://localhost:9000/mcp/sse"
+      "url": "http://localhost:9000/mcp/sse",
+      "headers": { "X-Auth-Key": "your-admin-key" }
     }
   }
 }

@@ -57,6 +57,21 @@ class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
 
+class AuthSettings(BaseSettings):
+    # Admin API key for the HTTP/SSE transport. When empty, auth is disabled
+    # (every request is allowed) so local stdio/dev keeps working unchanged.
+    admin_key: str = ""
+    # Header clients must send the key in. `Authorization: Bearer <key>` is
+    # always accepted as a fallback regardless of this value.
+    header_name: str = "X-Auth-Key"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.admin_key)
+
+    model_config = SettingsConfigDict(env_prefix="AUTH_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
+
+
 class GCSettings(BaseSettings):
     enabled: bool = True
     run_interval_hours: int = 24
@@ -80,6 +95,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     gc: GCSettings = Field(default_factory=GCSettings)
 
     model_config = SettingsConfigDict(
