@@ -42,9 +42,9 @@ class GarbageCollector:
         totals = {"deprecated": 0, "deleted": 0, "skipped": 0}
 
         for collection in collections:
-            # Swap to correct collection scope
-            self._qdrant._collection_name = collection  # type: ignore[attr-defined]
-            stats = await self._process_collection(collection, run_id)
+            # Use a collection-scoped view — never mutate the shared storage
+            scoped = self._qdrant.scoped(collection)
+            stats = await self._process_collection(scoped, collection, run_id)
             for k, v in stats.items():
                 totals[k] += v
 
@@ -59,41 +59,48 @@ class GarbageCollector:
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    async def _process_collection(self, collection: str, run_id: str) -> dict[str, int]:
+    async def _process_collection(
+        self, qdrant: QdrantStorage, collection: str, run_id: str
+    ) -> dict[str, int]:
         stats = {"deprecated": 0, "deleted": 0, "skipped": 0}
-        offset: str | None = None
         now = datetime.now(timezone.utc)
 
         # Phase 2: hard-delete already-deprecated items past grace period
-        deprecated_items, _ = await self._qdrant.scan_all_items(
-            include_deprecated=True, limit=500
-        )
-        for item in deprecated_items:
-            if not item.get("is_deprecated"):
-                continue
-            deprecated_at_raw = item.get("deprecated_at")
-            if not deprecated_at_raw:
-                continue
-            deprecated_at = datetime.fromisoformat(deprecated_at_raw)
-            if deprecated_at.tzinfo is None:
-                deprecated_at = deprecated_at.replace(tzinfo=timezone.utc)
-            if (now - deprecated_at).days >= self._settings.grace_period_days:
-                item_id = item["_id"]
-                await self._qdrant.hard_delete(item_id)
-                await self._postgres.gc_log_add(
-                    run_id=run_id, item_id=item_id, collection=collection,
-                    memory_layer=item.get("memory_layer", "unknown"),
-                    action="deleted", reason="grace period expired",
-                )
-                stats["deleted"] += 1
+        offset: str | None = None
+        while True:
+            deprecated_items, offset = await qdrant.scan_all_items(
+                include_deprecated=True, limit=500, offset=offset
+            )
+            for item in deprecated_items:
+                if not item.get("is_deprecated"):
+                    continue
+                deprecated_at_raw = item.get("deprecated_at")
+                if not deprecated_at_raw:
+                    continue
+                deprecated_at = datetime.fromisoformat(deprecated_at_raw)
+                if deprecated_at.tzinfo is None:
+                    deprecated_at = deprecated_at.replace(tzinfo=timezone.utc)
+                if (now - deprecated_at).days >= self._settings.grace_period_days:
+                    item_id = item["_id"]
+                    await qdrant.hard_delete(item_id)
+                    await self._postgres.relation_delete_for_items([item_id])
+                    await self._postgres.gc_log_add(
+                        run_id=run_id, item_id=item_id, collection=collection,
+                        memory_layer=item.get("memory_layer", "unknown"),
+                        action="deleted", reason="grace period expired",
+                    )
+                    stats["deleted"] += 1
+            if offset is None:
+                break
 
         # Phase 1: deprecate expired items
+        offset = None
         while True:
-            items, offset = await self._qdrant.scan_all_items(
+            items, offset = await qdrant.scan_all_items(
                 include_deprecated=False, limit=500, offset=offset
             )
             for item in items:
-                result = await self._process_item(item, collection, run_id, now)
+                result = await self._process_item(qdrant, item, collection, run_id, now)
                 stats[result] += 1
             if offset is None:
                 break
@@ -101,7 +108,12 @@ class GarbageCollector:
         return stats
 
     async def _process_item(
-        self, item: dict[str, Any], collection: str, run_id: str, now: datetime
+        self,
+        qdrant: QdrantStorage,
+        item: dict[str, Any],
+        collection: str,
+        run_id: str,
+        now: datetime,
     ) -> str:
         item_id = item["_id"]
 
@@ -126,7 +138,7 @@ class GarbageCollector:
         if (now - last_touched) < timedelta(days=effective_ttl):
             return "skipped"
 
-        await self._qdrant.deprecate(item_id, reason="ttl expired")
+        await qdrant.deprecate(item_id, reason="ttl expired")
         await self._postgres.gc_log_add(
             run_id=run_id, item_id=item_id, collection=collection,
             memory_layer=item.get("memory_layer", "unknown"),

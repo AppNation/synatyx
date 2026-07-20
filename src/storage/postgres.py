@@ -3,12 +3,26 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func, select, text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config import settings
+from src.models.relation import MemoryRelation
 from src.models.session import KeyEntity, Session, SessionStatus
 from src.models.skill import Skill, _slugify
 from src.models.task import Task, TaskPriority, TaskStatus
@@ -97,6 +111,25 @@ class TaskRow(Base):
     project: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MemoryRelationRow(Base):
+    __tablename__ = "memory_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "source_item_id", "target_item_id", "relation_type",
+            name="uq_memory_relations_edge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_item_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_item_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    relation_type: Mapped[str] = mapped_column(String, nullable=False, default="related_to")
+    project: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +347,134 @@ class PostgresStorage:
                 reason=reason,
             ))
             await session.commit()
+
+    # ── Memory Relations ─────────────────────────────────────────────────────
+
+    async def relation_add(self, relation: MemoryRelation) -> tuple[MemoryRelation, bool]:
+        """Insert a relation edge. Returns (relation, created).
+
+        If an identical edge already exists (same user, endpoints, and type),
+        the existing edge is returned with created=False.
+        """
+        async with self._session_factory() as session:
+            row = MemoryRelationRow(
+                id=relation.id,
+                user_id=relation.user_id,
+                source_item_id=relation.source_item_id,
+                target_item_id=relation.target_item_id,
+                relation_type=relation.relation_type,
+                project=relation.project,
+                metadata_=relation.metadata,
+            )
+            session.add(row)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                stmt = select(MemoryRelationRow).where(
+                    (MemoryRelationRow.user_id == relation.user_id)
+                    & (MemoryRelationRow.source_item_id == relation.source_item_id)
+                    & (MemoryRelationRow.target_item_id == relation.target_item_id)
+                    & (MemoryRelationRow.relation_type == relation.relation_type)
+                )
+                result = await session.execute(stmt)
+                existing = result.scalars().first()
+                if existing is None:  # pragma: no cover — lost a race with a delete
+                    raise
+                return self._row_to_relation(existing), False
+            await session.refresh(row)
+            return self._row_to_relation(row), True
+
+    async def relation_list(
+        self,
+        user_id: str,
+        item_id: str | None = None,
+        item_ids: list[str] | None = None,
+        relation_type: str | None = None,
+        direction: str = "both",
+        limit: int = 200,
+    ) -> list[MemoryRelation]:
+        """List edges touching the given item(s), scoped to the user.
+
+        direction: 'out' (item is source), 'in' (item is target), or 'both'.
+        """
+        ids = list(item_ids or ([item_id] if item_id else []))
+        async with self._session_factory() as session:
+            stmt = select(MemoryRelationRow).where(MemoryRelationRow.user_id == user_id)
+            if ids:
+                if direction == "out":
+                    stmt = stmt.where(MemoryRelationRow.source_item_id.in_(ids))
+                elif direction == "in":
+                    stmt = stmt.where(MemoryRelationRow.target_item_id.in_(ids))
+                else:
+                    stmt = stmt.where(or_(
+                        MemoryRelationRow.source_item_id.in_(ids),
+                        MemoryRelationRow.target_item_id.in_(ids),
+                    ))
+            if relation_type:
+                stmt = stmt.where(MemoryRelationRow.relation_type == relation_type)
+            stmt = stmt.order_by(MemoryRelationRow.created_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return [self._row_to_relation(r) for r in result.scalars().all()]
+
+    async def relation_delete(
+        self,
+        user_id: str,
+        relation_id: str | None = None,
+        source_item_id: str | None = None,
+        target_item_id: str | None = None,
+        relation_type: str | None = None,
+    ) -> int:
+        """Delete edges by relation id, or by endpoint pair (optionally typed).
+
+        Returns the number of deleted rows.
+        """
+        if not relation_id and not (source_item_id and target_item_id):
+            raise ValueError("Provide relation_id, or both source_item_id and target_item_id")
+        async with self._session_factory() as session:
+            stmt = delete(MemoryRelationRow).where(MemoryRelationRow.user_id == user_id)
+            if relation_id:
+                stmt = stmt.where(MemoryRelationRow.id == relation_id)
+            else:
+                stmt = stmt.where(
+                    (MemoryRelationRow.source_item_id == source_item_id)
+                    & (MemoryRelationRow.target_item_id == target_item_id)
+                )
+                if relation_type:
+                    stmt = stmt.where(MemoryRelationRow.relation_type == relation_type)
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount or 0
+
+    async def relation_delete_for_items(self, item_ids: list[str]) -> int:
+        """Remove all edges touching the given items — GC/hard-delete cleanup.
+
+        Not user-scoped: called when the items themselves are permanently
+        deleted, so any edge referencing them is dangling regardless of owner.
+        """
+        if not item_ids:
+            return 0
+        async with self._session_factory() as session:
+            stmt = delete(MemoryRelationRow).where(or_(
+                MemoryRelationRow.source_item_id.in_(item_ids),
+                MemoryRelationRow.target_item_id.in_(item_ids),
+            ))
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount or 0
+
+    @staticmethod
+    def _row_to_relation(row: MemoryRelationRow) -> MemoryRelation:
+        return MemoryRelation(
+            id=row.id,
+            user_id=row.user_id,
+            source_item_id=row.source_item_id,
+            target_item_id=row.target_item_id,
+            relation_type=row.relation_type,
+            project=row.project,
+            metadata=row.metadata_ or {},
+            created_at=row.created_at,
+        )
 
     # ── Skill CRUD ───────────────────────────────────────────────────────────
 

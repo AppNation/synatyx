@@ -10,7 +10,6 @@ from qdrant_client.models import (
     Filter,
     MatchValue,
     PointStruct,
-    ScrollRequest,
     VectorParams,
 )
 
@@ -44,6 +43,20 @@ class QdrantStorage:
     @property
     def collection_name(self) -> str:
         return self._collection_name
+
+    def scoped(self, collection_name: str) -> QdrantStorage:
+        """Return a view of this storage bound to another collection.
+
+        Shares the underlying client — do not call close() on the returned
+        instance. Used by GC to iterate collections without mutating the
+        shared storage's collection scope.
+        """
+        clone = object.__new__(QdrantStorage)
+        clone._host = self._host
+        clone._port = self._port
+        clone._collection_name = collection_name
+        clone._client = self._client
+        return clone
 
     async def init_collection(self) -> None:
         """Create the collection if it doesn't exist."""
@@ -175,6 +188,40 @@ class QdrantStorage:
             items.append(item)
         return items
 
+    @staticmethod
+    def _payload_to_item(point_id: Any, payload: dict[str, Any]) -> ContextItem:
+        """Rebuild a ContextItem from a Qdrant point payload, preserving created_at."""
+        from datetime import datetime
+        kwargs: dict[str, Any] = {
+            "id": str(point_id),
+            "user_id": payload.get("user_id", ""),
+            "session_id": payload.get("session_id"),
+            "content": payload.get("content", ""),
+            "memory_layer": MemoryLayer(payload.get("memory_layer", "L3")),
+            "importance": payload.get("importance", 0.5),
+            "is_pinned": payload.get("is_pinned", False),
+            "is_deprecated": payload.get("is_deprecated", False),
+            "metadata": payload.get("metadata", {}),
+        }
+        created_raw = payload.get("created_at")
+        if created_raw:
+            kwargs["created_at"] = datetime.fromisoformat(created_raw)
+        return ContextItem(**kwargs)
+
+    async def get_by_id(self, item_id: str) -> ContextItem | None:
+        """Fetch a single point by ID — no scan, no user filter (caller must
+        enforce ownership on the returned item)."""
+        records = await self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=[str(uuid.UUID(item_id))],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not records:
+            return None
+        r = records[0]
+        return self._payload_to_item(r.id, r.payload or {})
+
     async def delete(self, item_id: str) -> None:
         """Delete a single point by ID."""
         await self._client.delete(
@@ -194,16 +241,17 @@ class QdrantStorage:
     async def touch(self, item_ids: list[str]) -> None:
         """Update last_accessed_at for retrieved items — used by access tracking."""
         from datetime import datetime, timezone
+        if not item_ids:
+            return
         now = datetime.now(timezone.utc).isoformat()
-        for item_id in item_ids:
-            try:
-                await self._client.set_payload(
-                    collection_name=self._collection_name,
-                    payload={"last_accessed_at": now},
-                    points=[str(uuid.UUID(item_id))],
-                )
-            except Exception:
-                pass  # never block retrieval on touch failures
+        try:
+            await self._client.set_payload(
+                collection_name=self._collection_name,
+                payload={"last_accessed_at": now},
+                points=[str(uuid.UUID(item_id)) for item_id in item_ids],
+            )
+        except Exception:
+            pass  # never block retrieval on touch failures
 
     async def deprecate(self, item_id: str, reason: str | None = None) -> None:
         """Mark a point as deprecated by updating its payload in-place."""
@@ -310,21 +358,10 @@ class QdrantStorage:
         items = []
         for r in results:
             p = r.payload or {}
-            metadata = p.get("metadata", {})
             # filter checkpoints in Python (no top-level field for checkpoint_name)
-            if checkpoints_only and "checkpoint_name" not in metadata:
+            if checkpoints_only and "checkpoint_name" not in p.get("metadata", {}):
                 continue
-            items.append(ContextItem(
-                id=str(r.id),
-                user_id=p.get("user_id", ""),
-                session_id=p.get("session_id"),
-                content=p.get("content", ""),
-                memory_layer=MemoryLayer(p.get("memory_layer", "L3")),
-                importance=p.get("importance", 0.5),
-                is_pinned=p.get("is_pinned", False),
-                is_deprecated=p.get("is_deprecated", False),
-                metadata=metadata,
-            ))
+            items.append(self._payload_to_item(r.id, p))
         return items
 
     async def ping(self) -> bool:

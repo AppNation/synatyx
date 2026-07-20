@@ -10,6 +10,7 @@ from mcp.types import TextContent, Tool
 from src.core.budget import BudgetManager
 from src.core.ingest import IngestService
 from src.core.project import ProjectManager
+from src.core.relation import RelationService
 from src.core.retrieve import RetrieveService
 from src.core.score import score_items
 from src.core.skill import SkillService
@@ -53,6 +54,12 @@ class SynatyxMCPServer:
         if key not in self._skill_svc_cache:
             self._skill_svc_cache[key] = SkillService(storage, self._postgres)
         return self._skill_svc_cache[key]
+
+    async def _get_relation_service(self, user_id: str) -> RelationService:
+        """Return a RelationService spanning the active project collection and ctx_users."""
+        storage, _, _, _, _ = await self._get_services(user_id)
+        l4_storage = await self._project_manager.get_l4_storage()
+        return RelationService(self._postgres, storage, l4_storage)
 
     async def _get_l4_services(self) -> tuple[QdrantStorage, StoreService, RetrieveService]:
         """Return services backed by the shared ctx_users collection (L4 only)."""
@@ -181,18 +188,58 @@ class SynatyxMCPServer:
             final_items = combined_items[:top_k]
             total_tokens = sum(i.token_estimate for i in final_items)
 
+            dumped_items = [i.model_dump() for i in final_items]
+
+            # Optional 1-hop relation expansion — pull in linked memories
+            if args.get("expand_relations") and final_items:
+                relations = await self._get_relation_service(user_id)
+                expanded = await relations.expand(
+                    user_id=user_id,
+                    item_ids=[i.id for i in final_items],
+                    max_items=top_k,
+                )
+                dumped_items.extend(expanded)
+                total_tokens += sum(len(e.get("content", "")) // 4 for e in expanded)
+
             return {
-                "context_items": [i.model_dump() for i in final_items],
+                "context_items": dumped_items,
                 "total_tokens": total_tokens,
                 "suggested_budget": suggested_budget,
                 **_warn,
             }
 
         elif name == "context_store":
+            # Batch mode: store several items in one call
+            if "items" in args and args["items"]:
+                results: list[dict[str, Any]] = []
+                for entry in args["items"]:
+                    entry_layer = MemoryLayer(entry["memory_layer"])
+                    # L4 is user-global — always goes to ctx_users
+                    _store = (
+                        store if entry_layer != MemoryLayer.L4
+                        else (await self._get_l4_services())[1]
+                    )
+                    batch = await _store.store_batch(
+                        [entry], user_id=user_id, session_id=args.get("session_id")
+                    )
+                    results.extend(batch)
+                stored = sum(1 for r in results if "error" not in r)
+                return {
+                    "results": results,
+                    "stored": stored,
+                    "failed": len(results) - stored,
+                    **_warn,
+                }
+
+            if "content" not in args or "memory_layer" not in args:
+                return {
+                    "error": "Provide either 'items' (batch) or 'content' + 'memory_layer' (single)."
+                }
+
             layer = MemoryLayer(args["memory_layer"])
             # L4 is user-global — always goes to ctx_users, not the active project collection
             _store = store if layer != MemoryLayer.L4 else (await self._get_l4_services())[1]
-            item_id, embedded = await _store.store(
+            item_ids, embedded = await _store.store(
                 content=args["content"],
                 user_id=user_id,
                 memory_layer=layer,
@@ -201,7 +248,7 @@ class SynatyxMCPServer:
                 metadata=args.get("metadata"),
                 confidence=args.get("confidence", 1.0),
             )
-            return {"item_id": item_id, "embedded": embedded, **_warn}
+            return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn}
 
         elif name == "context_summarize":
             summarize = SummarizeService(self._redis, self._postgres, store=store)
@@ -242,22 +289,151 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_checkpoint":
-            item_id, embedded = await store.checkpoint(
+            item_ids, embedded = await store.checkpoint(
                 name=args["name"],
                 content=args["content"],
                 user_id=user_id,
                 project=args.get("project"),
                 session_id=args.get("session_id"),
             )
-            return {"item_id": item_id, "embedded": embedded, "checkpoint_name": args["name"], **_warn}
+            return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, "checkpoint_name": args["name"], **_warn}
 
         elif name == "context_deprecate":
-            await store.deprecate(
-                item_id=args["item_id"],
+            item_id = args["item_id"]
+            superseded_by = args.get("superseded_by")
+            # L4 items live in ctx_users — fall back if not in the project collection
+            _dep_store = store
+            if await storage.get_by_id(item_id) is None:
+                l4_storage, l4_store, _ = await self._get_l4_services()
+                if await l4_storage.get_by_id(item_id) is not None:
+                    _dep_store = l4_store
+            await _dep_store.deprecate(
+                item_id=item_id,
                 user_id=user_id,
                 reason=args.get("reason"),
             )
-            return {"deprecated": True, "item_id": args["item_id"]}
+            result: dict[str, Any] = {"deprecated": True, "item_id": item_id}
+            if superseded_by:
+                relations = await self._get_relation_service(user_id)
+                edge, _created = await relations.relate(
+                    user_id=user_id,
+                    source_id=superseded_by,
+                    target_id=item_id,
+                    relation_type="supersedes",
+                )
+                result["superseded_by"] = superseded_by
+                result["relation_id"] = edge.id
+            return result
+
+        elif name == "context_relate":
+            relations = await self._get_relation_service(user_id)
+            edge, created = await relations.relate(
+                user_id=user_id,
+                source_id=args["source_id"],
+                target_id=args["target_id"],
+                relation_type=args.get("relation_type", "related_to"),
+                project=args.get("project"),
+                metadata=args.get("metadata"),
+            )
+            return {
+                "relation_id": edge.id,
+                "source_id": edge.source_item_id,
+                "target_id": edge.target_item_id,
+                "relation_type": edge.relation_type,
+                "created": created,
+            }
+
+        elif name == "context_unrelate":
+            relations = await self._get_relation_service(user_id)
+            deleted = await relations.unrelate(
+                user_id=user_id,
+                relation_id=args.get("relation_id"),
+                source_id=args.get("source_id"),
+                target_id=args.get("target_id"),
+                relation_type=args.get("relation_type"),
+            )
+            return {"deleted": deleted}
+
+        elif name == "context_related":
+            relations = await self._get_relation_service(user_id)
+            edges, neighbors = await relations.related(
+                user_id=user_id,
+                item_id=args["item_id"],
+                relation_type=args.get("relation_type"),
+                direction=args.get("direction", "both"),
+            )
+            return {
+                "item_id": args["item_id"],
+                "relations": [
+                    {
+                        "relation_id": e.id,
+                        "source_id": e.source_item_id,
+                        "target_id": e.target_item_id,
+                        "relation_type": e.relation_type,
+                        "created_at": e.created_at.isoformat(),
+                    }
+                    for e in edges
+                ],
+                "items": {item_id: item.model_dump() for item_id, item in neighbors.items()},
+                "count": len(edges),
+            }
+
+        elif name == "context_get":
+            relations = await self._get_relation_service(user_id)
+            fetched = await relations.get_item(args["item_id"], user_id)
+            if fetched is None:
+                return {"error": f"Item {args['item_id']!r} not found"}
+            return {"item": fetched.model_dump()}
+
+        elif name == "context_visualize":
+            from src.core.visualize import render_mermaid
+            from src.models.memory_layer import MemoryLayer as ML
+            layer_str = args.get("memory_layer")
+            graph_layer = ML(layer_str) if layer_str else None
+            # L4 lives in ctx_users — route there when the filter is explicitly L4
+            _viz_storage = (
+                (await self._get_l4_services())[0] if graph_layer == ML.L4 else storage
+            )
+            graph_items = await _viz_storage.list_items(
+                user_id=user_id,
+                memory_layer=graph_layer,
+                include_deprecated=args.get("include_deprecated", True),
+                project=args.get("project"),
+                limit=args.get("limit", 50),
+            )
+            relations = await self._get_relation_service(user_id)
+            edges = await self._postgres.relation_list(
+                user_id=user_id,
+                item_ids=[i.id for i in graph_items],
+                limit=500,
+            )
+            # Edges may reach items outside the listed set (other layers, the
+            # shared L4 collection, deprecated supersedes targets) — hydrate
+            # those endpoints so their edges render instead of being dropped.
+            known_ids = {i.id for i in graph_items}
+            for edge in edges:
+                for endpoint in (edge.source_item_id, edge.target_item_id):
+                    if endpoint in known_ids:
+                        continue
+                    known_ids.add(endpoint)
+                    try:
+                        neighbor = await relations.get_item(endpoint, user_id)
+                    except PermissionError:
+                        continue
+                    if neighbor is not None:
+                        graph_items.append(neighbor)
+            mermaid, node_count, edge_count = render_mermaid(
+                graph_items,
+                edges,
+                direction=args.get("direction", "LR"),
+                relations_only=args.get("relations_only", False),
+            )
+            return {
+                "mermaid": mermaid,
+                "node_count": node_count,
+                "edge_count": edge_count,
+                **_warn,
+            }
 
         elif name == "context_list":
             from src.models.memory_layer import MemoryLayer as ML
@@ -414,7 +590,8 @@ class SynatyxMCPServer:
             return {"deleted": True, "name": args["name"]}
 
         elif name == "context_gc_stats":
-            _, qdrant, _, _, _ = await self._get_services(user_id)
+            # _get_services returns (storage, retrieve, store, ingest, suggestion)
+            qdrant = storage
             from src.config import settings as _settings
             from src.core.gc import GarbageCollector, _IMMUNE_LAYERS, _IMMUNE_TYPE
             from datetime import datetime, timedelta, timezone

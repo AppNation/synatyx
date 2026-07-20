@@ -37,6 +37,10 @@
             ]
           },
           "description": "Which memory layers to query (default: all)"
+        },
+        "expand_relations": {
+          "type": "boolean",
+          "description": "Also include memories linked to the retrieved items via relations (1-hop, marked with via_relation). Default: false"
         }
       },
       "required": [
@@ -47,13 +51,50 @@
   },
   {
     "name": "context_store",
-    "description": "Store a piece of content into the appropriate memory layer.",
+    "description": "Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N).",
     "parameters": {
       "type": "object",
       "properties": {
         "content": {
           "type": "string",
-          "description": "Content to store"
+          "description": "Content to store (single-item mode)"
+        },
+        "items": {
+          "type": "array",
+          "description": "Batch mode: list of items to store in one call. Each item: {content, memory_layer, importance?, metadata?, confidence?, session_id?}. When provided, top-level content/memory_layer are ignored.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "memory_layer": {
+                "type": "string",
+                "enum": [
+                  "L1",
+                  "L2",
+                  "L3",
+                  "L4"
+                ]
+              },
+              "importance": {
+                "type": "number"
+              },
+              "metadata": {
+                "type": "object"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "session_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "memory_layer"
+            ]
+          }
         },
         "user_id": {
           "type": "string",
@@ -86,9 +127,7 @@
         }
       },
       "required": [
-        "content",
-        "user_id",
-        "memory_layer"
+        "user_id"
       ]
     }
   },
@@ -181,7 +220,7 @@
   },
   {
     "name": "context_deprecate",
-    "description": "Mark an existing memory item as deprecated. The item is NOT deleted — it stays in the store but is excluded from normal retrieval. Use this when a checkpoint or fact is superseded by a newer one.",
+    "description": "Mark an existing memory item as deprecated. The item is NOT deleted — it stays in the store but is excluded from normal retrieval. Use this when a checkpoint or fact is superseded by a newer one. Pass superseded_by to record which item replaces it (creates a 'supersedes' relation automatically).",
     "parameters": {
       "type": "object",
       "properties": {
@@ -196,10 +235,189 @@
         "reason": {
           "type": "string",
           "description": "Why this item is being deprecated (optional)"
+        },
+        "superseded_by": {
+          "type": "string",
+          "description": "ID of the newer item that replaces this one — records a 'supersedes' relation (new item → deprecated item) so replacement history is traceable (optional)"
         }
       },
       "required": [
         "item_id",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_relate",
+    "description": "Link two memory items with a typed relation (source → target) so they can be retrieved and handled together. Known types: related_to, supersedes, part_of, depends_on, caused_by — custom types are also accepted.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "description": "ID of the source memory item"
+        },
+        "target_id": {
+          "type": "string",
+          "description": "ID of the target memory item"
+        },
+        "relation_type": {
+          "type": "string",
+          "description": "Relation type (default: related_to). Known: related_to, supersedes, part_of, depends_on, caused_by. Custom strings allowed."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project name tag (optional)"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Extra metadata for the edge (optional)"
+        }
+      },
+      "required": [
+        "source_id",
+        "target_id",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_unrelate",
+    "description": "Remove a relation between two memory items — by relation_id, or by the source_id + target_id pair (optionally narrowed by relation_type).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "relation_id": {
+          "type": "string",
+          "description": "ID of the relation to remove"
+        },
+        "source_id": {
+          "type": "string",
+          "description": "Source item ID (used with target_id when relation_id is not given)"
+        },
+        "target_id": {
+          "type": "string",
+          "description": "Target item ID (used with source_id when relation_id is not given)"
+        },
+        "relation_type": {
+          "type": "string",
+          "description": "Only remove edges of this type (optional, with source_id/target_id)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        }
+      },
+      "required": [
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_related",
+    "description": "List the memories linked to an item via relations, with the connecting edges. Follows supersedes chains into deprecated items (direct lookup, not search).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Memory item ID whose neighbors to fetch"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "relation_type": {
+          "type": "string",
+          "description": "Only follow edges of this type (optional)"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "out",
+            "in",
+            "both"
+          ],
+          "description": "Edge direction relative to item_id (default: both)"
+        }
+      },
+      "required": [
+        "item_id",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_get",
+    "description": "Fetch a single memory item directly by its ID — no vector search. Works for deprecated items too. Use when you already know the item id (e.g. from a previous store/retrieve/related call).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Memory item ID"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        }
+      },
+      "required": [
+        "item_id",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_visualize",
+    "description": "Render the memory graph (items + relation edges) as a Mermaid flowchart. Nodes are colored by memory layer (L1-L4), deprecated items are dashed, pinned items get a thick border; edges are labeled with their relation type. The returned mermaid string renders natively in Claude and any Mermaid viewer. Best for up to ~50 nodes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Filter items by project tag (optional)"
+        },
+        "memory_layer": {
+          "type": "string",
+          "enum": [
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ],
+          "description": "Only include items from this layer (optional; L4 reads the shared user collection)"
+        },
+        "relations_only": {
+          "type": "boolean",
+          "description": "Only show items that have at least one relation edge (default: false)"
+        },
+        "include_deprecated": {
+          "type": "boolean",
+          "description": "Include deprecated items, e.g. supersedes targets (default: true)"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "LR",
+            "TD"
+          ],
+          "description": "Graph layout direction: left-to-right or top-down (default: LR)"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max items to include (default: 50)"
+        }
+      },
+      "required": [
         "user_id"
       ]
     }
