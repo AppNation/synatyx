@@ -64,17 +64,16 @@ class StoreService:
         metadata: dict[str, Any] | None = None,
         confidence: float = 1.0,
         is_pinned: bool = False,
-    ) -> tuple[str, bool]:
+    ) -> tuple[list[str], bool]:
         """
         Store content into the appropriate memory layer.
 
         For vector layers (L2, L3, L4):
         - Content longer than CHUNK_THRESHOLD is split into chunks first
         - Each chunk is embedded and stored as a separate ContextItem
-        - Returns the ID of the first (or only) chunk
 
         Returns:
-            item_id: ID of the first stored item
+            item_ids: IDs of all stored items (one per chunk, first chunk first)
             embedded: whether content was vectorized and stored in Qdrant
         """
         sanitized = _sanitize(content)
@@ -97,7 +96,7 @@ class StoreService:
                 metadata=base_meta,
             )
             await self._redis.l1_push(item)
-            first_id = item.id
+            item_ids = [item.id]
 
             # Keep the Postgres session record in sync
             if session_id:
@@ -111,7 +110,7 @@ class StoreService:
                 from src.core.chunker import Chunk
                 chunks = [Chunk(text=sanitized, start_pos=0, end_pos=len(sanitized))]
 
-            first_id = ""
+            item_ids = []
             texts = [c.text for c in chunks]
             embeddings = await self._embedder.embed_batch(texts)
 
@@ -133,26 +132,54 @@ class StoreService:
                     },
                 )
                 await self._qdrant.upsert(item)
-                if idx == 0:
-                    first_id = item.id
+                item_ids.append(item.id)
 
             embedded = True
 
         await self._redis.publish("context_stored", {
-            "item_id": first_id,
+            "item_id": item_ids[0],
             "user_id": user_id,
             "memory_layer": memory_layer.value,
             "embedded": embedded,
         })
 
         await self._postgres.audit(user_id, "context_store", {
-            "item_id": first_id,
+            "item_id": item_ids[0],
             "memory_layer": memory_layer.value,
             "importance": importance,
             "embedded": embedded,
         })
 
-        return first_id, embedded
+        return item_ids, embedded
+
+    async def store_batch(
+        self,
+        items: list[dict[str, Any]],
+        user_id: str,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Store multiple items in one call — one round-trip for the client.
+
+        Each entry: {content, memory_layer, importance?, metadata?, confidence?}.
+        Items are stored independently; a failure on one item does not roll back
+        the others. Returns one result dict per input item, in order.
+        """
+        results: list[dict[str, Any]] = []
+        for entry in items:
+            try:
+                item_ids, embedded = await self.store(
+                    content=entry["content"],
+                    user_id=user_id,
+                    memory_layer=MemoryLayer(entry["memory_layer"]),
+                    importance=float(entry.get("importance", 0.5)),
+                    session_id=entry.get("session_id", session_id),
+                    metadata=entry.get("metadata"),
+                    confidence=float(entry.get("confidence", 1.0)),
+                )
+                results.append({"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded})
+            except Exception as exc:
+                results.append({"error": str(exc)})
+        return results
 
     async def checkpoint(
         self,
@@ -161,7 +188,7 @@ class StoreService:
         user_id: str,
         project: str | None = None,
         session_id: str | None = None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[list[str], bool]:
         """
         Store a named checkpoint as a pinned L3 memory item with importance=1.0.
 
@@ -196,11 +223,8 @@ class StoreService:
         from normal retrieval (search filters out is_deprecated=True).
         A deprecation note is optionally stored alongside it.
         """
-        # Fetch the item first to enforce user isolation
-        items = await self._qdrant.list_items(
-            user_id=user_id, include_deprecated=True, limit=1000
-        )
-        target = next((i for i in items if i.id == item_id), None)
+        # Fetch the item directly by ID to enforce user isolation
+        target = await self._qdrant.get_by_id(item_id)
         if target is None:
             raise ValueError(f"Item {item_id!r} not found for user {user_id!r}")
         if target.user_id != user_id:

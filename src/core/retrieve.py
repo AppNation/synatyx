@@ -17,9 +17,14 @@ from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
 
-# Score fusion weights (from CTX-EG: 0.6 dense + 0.4 BM25)
+# Text-relevance fusion weights (from CTX-EG: 0.6 dense + 0.4 BM25)
 DENSE_WEIGHT = 0.6
 BM25_WEIGHT = 0.4
+
+# Final blend: hybrid text relevance vs. contextual signals (recency,
+# importance, user signal). final = 0.6 * text + 0.4 * signals.
+TEXT_WEIGHT = 0.6
+SIGNAL_WEIGHT = 1 - TEXT_WEIGHT
 
 # MMR lambda: 0.6 = slightly favour relevance over diversity
 MMR_LAMBDA = 0.6
@@ -45,6 +50,9 @@ class RetrieveService:
         self._postgres = postgres
         self._embedder = get_embedder()
         self._budget = budget_manager or BudgetManager()
+        # Strong refs to fire-and-forget tasks — the event loop only keeps weak
+        # refs, so untracked tasks can be garbage-collected mid-flight
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     async def retrieve(
         self,
@@ -63,8 +71,9 @@ class RetrieveService:
         1. L1 from Redis (exact, no vector search)
         2. L2/L3/L4 from Qdrant (dense kNN — fetch 3x top_k as candidates)
         3. BM25 re-score candidates against query
-        4. Fuse: final_score = 0.6 * dense + 0.4 * BM25
-        5. Apply recency / importance / user signal scoring
+        4. Fuse text relevance: text = 0.6 * dense + 0.4 * BM25
+        5. Blend with contextual signals (recency, importance, user signal):
+           final = 0.6 * text + 0.4 * signals
         6. Enforce token budget per layer
         7. Apply MMR diversification
         """
@@ -78,11 +87,12 @@ class RetrieveService:
             l1_items = await self._redis.l1_get(user_id, session_id)
             all_items.extend(l1_items)
 
-        # Step 2 — Fetch 3x candidates from Qdrant for better BM25 + MMR pool
+        # Step 2 — Fetch 3x candidates from Qdrant for better BM25 + MMR pool.
+        # Layer searches are independent — run them concurrently.
         candidate_k = top_k * 3
         vector_layers = [l for l in layers if l != MemoryLayer.L1]
-        for layer in vector_layers:
-            results = await self._qdrant.search(
+        layer_results = await asyncio.gather(*(
+            self._qdrant.search(
                 query_vector=query_embedding,
                 user_id=user_id,
                 top_k=candidate_k,
@@ -90,11 +100,17 @@ class RetrieveService:
                 session_id=session_id,
                 project=project,
             )
+            for layer in vector_layers
+        ))
+        hit_ids: list[str] = []
+        for results in layer_results:
             all_items.extend(results)
-            # Fire-and-forget access tracking — update last_accessed_at in Qdrant
-            if results:
-                hit_ids = [r.id for r in results]
-                asyncio.create_task(self._track_access(hit_ids))
+            hit_ids.extend(r.id for r in results)
+        # Fire-and-forget access tracking — update last_accessed_at in Qdrant
+        if hit_ids:
+            task = asyncio.create_task(self._track_access(hit_ids))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
         # Deduplicate
         seen: set[str] = set()
@@ -122,10 +138,10 @@ class RetrieveService:
         scored, _ = score_items(unique_items, query, query_embedding)
 
         for i, item in enumerate(scored):
-            # Fuse dense score (already in item.semantic_score) with BM25
-            fused = DENSE_WEIGHT * item.semantic_score + BM25_WEIGHT * bm25_norm[i]
-            # Blend with full relevance score (recency, importance, user signal)
-            item.score = round(DENSE_WEIGHT * fused + (1 - DENSE_WEIGHT) * item.score, 4)
+            # Fuse dense score (already in item.semantic_score) with BM25,
+            # then blend with contextual signals (recency, importance, user signal)
+            text_score = DENSE_WEIGHT * item.semantic_score + BM25_WEIGHT * bm25_norm[i]
+            item.score = round(TEXT_WEIGHT * text_score + SIGNAL_WEIGHT * item.score, 4)
 
         scored.sort(key=lambda x: x.score, reverse=True)
 
