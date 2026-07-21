@@ -126,6 +126,32 @@ class RelationSettings(BaseSettings):
     )
 
 
+class TrackingSettings(BaseSettings):
+    """Server-side session tracking — implicit capture with zero client setup.
+
+    Every MCP tool call leaves a compact trace event in Redis; a background
+    loop compacts traces into L2 session memories once a session goes idle.
+    Works for every MCP client (Claude Code, Cursor, Desktop, custom agents)
+    because it observes traffic the server already receives.
+    """
+
+    enabled: bool = True
+    # a session is considered over after this much inactivity
+    idle_minutes: int = 30
+    # traces with fewer events than this are dropped as noise, not stored
+    min_events: int = 3
+    # cap per-trace buffer so a runaway session can't grow unbounded
+    max_events: int = 200
+    # how often the compaction loop wakes up
+    compact_interval_seconds: int = 600
+    # Redis TTL safety net on trace buffers
+    trace_ttl_hours: int = 48
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRACKING_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
+
+
 class Settings(BaseSettings):
     app_name: str = "Synatyx Context Engine"
     debug: bool = False
@@ -142,6 +168,7 @@ class Settings(BaseSettings):
     gc: GCSettings = Field(default_factory=GCSettings)
     relation: RelationSettings = Field(default_factory=RelationSettings)
     consolidation: ConsolidationSettings = Field(default_factory=ConsolidationSettings)
+    tracking: TrackingSettings = Field(default_factory=TrackingSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

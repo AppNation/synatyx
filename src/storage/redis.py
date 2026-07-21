@@ -13,6 +13,7 @@ L1_KEY_PREFIX = "synatyx:l1"
 BUDGET_KEY_PREFIX = "synatyx:budget"
 PUBSUB_CHANNEL = "synatyx:events"
 PROJECT_KEY_PREFIX = "synatyx:project"
+TRACE_KEY_PREFIX = "synatyx:trace"
 
 
 class RedisStorage:
@@ -103,6 +104,64 @@ class RedisStorage:
         """Return the active project slug for a user, or None if not set."""
         key = f"{PROJECT_KEY_PREFIX}:{user_id}"
         return await self._client.get(key)
+
+    # -------------------------------------------------------------------------
+    # Session Activity Traces (server-side implicit capture)
+    # -------------------------------------------------------------------------
+
+    def _trace_key(self, user_id: str, scope: str) -> str:
+        return f"{TRACE_KEY_PREFIX}:{user_id}:{scope}"
+
+    async def trace_append(
+        self,
+        user_id: str,
+        scope: str,
+        event: dict[str, Any],
+        max_events: int = 200,
+        ttl_seconds: int = 172_800,
+    ) -> None:
+        """Append one activity event to the session trace buffer."""
+        key = self._trace_key(user_id, scope)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, json.dumps(event, default=str))
+        pipe.ltrim(key, -max_events, -1)
+        pipe.expire(key, ttl_seconds)
+        await pipe.execute()
+
+    async def trace_keys(self) -> list[tuple[str, str]]:
+        """Return (user_id, scope) for every live trace buffer."""
+        found: list[tuple[str, str]] = []
+        async for key in self._client.scan_iter(match=f"{TRACE_KEY_PREFIX}:*"):
+            parts = key.split(":", 3)  # synatyx : trace : user_id : scope
+            if len(parts) == 4:
+                found.append((parts[2], parts[3]))
+        return found
+
+    async def trace_last_ts(self, user_id: str, scope: str) -> str | None:
+        """Timestamp of the newest event in a trace (None if buffer is gone)."""
+        raw = await self._client.lindex(self._trace_key(user_id, scope), -1)
+        if raw is None:
+            return None
+        try:
+            ts = json.loads(raw).get("ts")
+        except json.JSONDecodeError:
+            return None
+        return str(ts) if ts is not None else None
+
+    async def trace_pop_all(self, user_id: str, scope: str) -> list[dict[str, Any]]:
+        """Atomically drain a trace buffer (read + delete in one transaction)."""
+        key = self._trace_key(user_id, scope)
+        pipe = self._client.pipeline(transaction=True)
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        raw_items, _ = await pipe.execute()
+        events: list[dict[str, Any]] = []
+        for raw in raw_items:
+            try:
+                events.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+        return events
 
     # -------------------------------------------------------------------------
     # Lifecycle
