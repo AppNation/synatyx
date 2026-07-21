@@ -6,12 +6,17 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 
 - `context_set_project` — Set the active project; all memory ops are scoped to its dedicated Qdrant collection (`ctx_<slug>`)
 - `context_get_project` — Return the currently active project, or suggest the workspace folder name if none is set
-- `context_store` — Save a piece of information to long-term memory
-- `context_retrieve` — Search and recall relevant memories before answering
+- `context_store` — Save a piece of information to long-term memory. Also accepts a batch `items` array — prefer one batch call over N single calls when storing several facts
+- `context_retrieve` — Search and recall relevant memories before answering. Pass `expand_relations: true` to also pull in memories linked to the results (1-hop, tagged `via_relation`)
+- `context_get` — Fetch one memory directly by its item ID (no vector search)
+- `context_relate` — Link two memories with a typed edge: `related_to`, `supersedes`, `part_of`, `depends_on`, `caused_by`, or any custom type
+- `context_unrelate` — Remove a relation by relation ID or by source+target pair
+- `context_related` — List the memories linked to an item plus the connecting edges; follows `supersedes` chains into deprecated items
+- `context_visualize` — Render the memory graph as a Mermaid flowchart (nodes colored by layer, deprecated dashed, pinned bold, edges labeled by relation type)
 - `context_summarize` — Summarize and compress working memory for a session
 - `context_score` — Re-rank a list of context items by relevance to a query
 - `context_checkpoint` — Save a named, pinned snapshot of a decision or milestone (importance=1.0)
-- `context_deprecate` — Mark an item as superseded; excluded from retrieval but never deleted
+- `context_deprecate` — Mark an item as superseded; excluded from retrieval but never deleted. Pass `superseded_by: <new_item_id>` to auto-create a `supersedes` edge from the replacement
 - `context_list` — Browse stored items without vector search; filter by layer, project, or checkpoints
 - `context_ingest` — Parse any file (.docx, .pdf, .md, .py, .js, .ts, .go, …) or URL into chunks and store them automatically
 - `context_task_add` — Add a new task to remember for later (title, description, priority, project)
@@ -72,6 +77,25 @@ Parameters to use:
   - `L4` — procedural preferences (user-global: coding style, workflow rules, personal facts) → always stored in `ctx_users`
 - `importance`: `0.0`–`1.0` (use `0.9`+ for architectural decisions, `0.5`–`0.7` for useful facts, `0.3` for minor details)
 - `session_id`: use the project slug for project-specific facts (e.g. `"taty-v2"`), or a descriptive slug for global/cross-project facts (e.g. `"user-preferences"`)
+
+## When to Use Relations
+
+Link memories whenever facts belong together — related items retrieved as a group are far more useful than isolated fragments:
+
+- **A decision replaces an older one** → store the new fact, then `context_deprecate` the old item with `superseded_by: <new_id>` (creates the `supersedes` edge in one call)
+- **A fact depends on another** (e.g. "webhook secret rotation" depends on "payments use Stripe webhooks") → `context_relate` with `depends_on`
+- **A bug/root-cause pair** → `caused_by`; **a sub-decision of a bigger architecture choice** → `part_of`
+- When storing several facts about the same feature or decision, store them (batch mode), then relate them so future retrieval pulls the full picture
+- When retrieving before a significant task, pass `expand_relations: true` so linked context comes along automatically
+
+## When to Call `context_visualize`
+
+Call it whenever the user asks to "see", "show", "map", or "visualize" their memories, decisions, or how things connect — and proactively after building up a cluster of related memories, to confirm the structure looks right.
+
+- Always put the returned `mermaid` string in a ```mermaid code fence so it renders as a diagram
+- Useful parameters: `project` (one project's graph), `relations_only: true` (hide isolated nodes), `memory_layer: "L4"` (only user preferences), `include_deprecated: false` (hide superseded items), `direction: "TD"` (vertical), `limit` (default 50)
+- Reading it: green = L3 project knowledge, purple = L4 user preferences, blue = L2 session summaries, amber = L1, dashed gray = deprecated, thick border = pinned/checkpoint; edge labels are the relation types
+- Note: L1 memories live in Redis only and never appear in the graph
 
 ## When to Call `context_ingest`
 
