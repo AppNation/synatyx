@@ -1,5 +1,5 @@
 ---
-description: Synatyx long-term memory — keep context current via continuous retrieve/store/deprecate; use context_set_project, context_retrieve, context_store, tasks, and checkpoints across sessions
+description: Synatyx long-term memory — keep context current via continuous retrieve/store/deprecate; use context_set_project, context_retrieve, context_store, relations, visualization, tasks, and checkpoints across sessions
 alwaysApply: true
 ---
 
@@ -25,12 +25,17 @@ Default stance: if you would tell a teammate “remember this for next time,” 
 
 - `context_set_project` — Set the active project; all memory ops are scoped to its dedicated Qdrant collection (`ctx_<slug>`)
 - `context_get_project` — Return the currently active project, or suggest the workspace folder name if none is set
-- `context_store` — Save a piece of information to long-term memory
-- `context_retrieve` — Search and recall relevant memories before answering
+- `context_store` — Save a piece of information to long-term memory. Also accepts a batch `items` array — prefer one batch call over N single calls when storing several facts
+- `context_retrieve` — Search and recall relevant memories before answering. Pass `expand_relations: true` to also pull in memories linked to the results (1-hop, tagged `via_relation`)
+- `context_get` — Fetch one memory directly by its item ID (no vector search)
+- `context_relate` — Link two memories with a typed edge: `related_to`, `supersedes`, `part_of`, `depends_on`, `caused_by`, or any custom type
+- `context_unrelate` — Remove a relation by relation ID or by source+target pair
+- `context_related` — List the memories linked to an item plus the connecting edges; follows `supersedes` chains into deprecated items
+- `context_visualize` — Render the memory graph as a Mermaid flowchart (nodes colored by layer, deprecated dashed, pinned bold, edges labeled by relation type)
 - `context_summarize` — Summarize and compress working memory for a session
 - `context_score` — Re-rank a list of context items by relevance to a query
 - `context_checkpoint` — Save a named, pinned snapshot of a decision or milestone (importance=1.0)
-- `context_deprecate` — Mark an item as superseded; excluded from retrieval but never deleted
+- `context_deprecate` — Mark an item as superseded; excluded from retrieval but never deleted. Pass `superseded_by: <new_item_id>` to auto-create a `supersedes` edge from the replacement
 - `context_list` — Browse stored items without vector search; filter by layer or checkpoints
 - `context_ingest` — Parse any file (.docx, .pdf, .md, .py, .js, .ts, .go, …) or URL into chunks and store them automatically
 - `context_task_add` — Add a new task to remember for later (title, description, priority, project)
@@ -114,17 +119,36 @@ Store **proactively and silently** — never ask the user. Store whenever:
 
 ## Keeping Memory Fresh — Deprecation Rules
 
-**Before storing an updated fact, always deprecate the outdated one:**
+**Never let stale and current facts coexist — replace with a supersedes link:**
 
 1. Identify the old item (from retrieval results or `context_list`)
-2. Call `context_deprecate(id=<old-item-id>, user_id=...)` to mark it superseded
-3. Then call `context_store(...)` with the new, accurate fact
+2. Call `context_store(...)` with the new, accurate fact → note the returned `item_id`
+3. Call `context_deprecate(item_id=<old-item-id>, superseded_by=<new-item-id>, user_id=...)` — this deprecates the old item **and** creates a `supersedes` edge in one call, so the history stays navigable via `context_related`
 
 Deprecate whenever:
 - An architecture decision changes
 - A config value or env var changes
 - A module is renamed, removed, or restructured
 - A previously noted bug is fixed
+
+## When to Use Relations
+
+Link memories whenever facts belong together — related items retrieved as a group are far more useful than isolated fragments:
+
+- **A decision replaces an older one** → use the store + `superseded_by` flow above
+- **A fact depends on another** (e.g. "webhook secret rotation" depends on "payments use Stripe webhooks") → `context_relate` with `depends_on`
+- **A bug/root-cause pair** → `caused_by`; **a sub-decision of a bigger architecture choice** → `part_of`
+- When storing several facts about the same feature or decision, store them (batch mode), then relate them so future retrieval pulls the full picture
+- When retrieving before a significant task, pass `expand_relations: true` so linked context comes along automatically
+
+## When to Call `context_visualize`
+
+Call it whenever the user asks to "see", "show", "map", or "visualize" their memories, decisions, or how things connect — and proactively after building up a cluster of related memories, to confirm the structure looks right.
+
+- Always put the returned `mermaid` string in a ```mermaid code fence so it renders as a diagram
+- Useful parameters: `project` (one project's graph), `relations_only: true` (hide isolated nodes), `memory_layer: "L4"` (only user preferences), `include_deprecated: false` (hide superseded items), `direction: "TD"` (vertical), `limit` (default 50)
+- Reading it: green = L3 project knowledge, purple = L4 user preferences, blue = L2 session summaries, amber = L1, dashed gray = deprecated, thick border = pinned/checkpoint; edge labels are the relation types
+- Note: L1 memories live in Redis only and never appear in the graph
 
 ## Checkpoints — When to Pin Milestones
 
@@ -157,7 +181,7 @@ This compresses the session into an L2 episodic memory for future retrieval.
 2. `context_set_project` if not already set (use workspace folder name as slug)
 3. Run parallel retrieval: L4 preferences + broad project knowledge + `context_task_list`
 4. Inject retrieved context into reasoning before responding
-5. During conversation: **re-retrieve when topics or stakes shift**; `context_store` for every meaningful fact; deprecate stale items; `context_task_update` when task reality changes
+5. During conversation: **re-retrieve when topics or stakes shift**; `context_store` for every meaningful fact; relate facts that belong together; deprecate stale items with `superseded_by`; `context_task_update` when task reality changes
 6. Use `context_checkpoint` for milestones
 7. End of session: `context_summarize` if it was a substantial session
 
