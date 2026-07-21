@@ -14,6 +14,8 @@ KNOWN_RELATION_TYPES = {
     "part_of",
     "depends_on",
     "caused_by",
+    "alternative_to",
+    "used_for",
 }
 
 DEFAULT_RELATION_TYPE = "related_to"

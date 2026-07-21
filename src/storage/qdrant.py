@@ -222,6 +222,19 @@ class QdrantStorage:
         r = records[0]
         return self._payload_to_item(r.id, r.payload or {})
 
+    async def get_vector(self, item_id: str) -> list[float] | None:
+        """Fetch a point's stored embedding by ID (None if the point is missing)."""
+        records = await self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=[str(uuid.UUID(item_id))],
+            with_payload=False,
+            with_vectors=True,
+        )
+        if not records or records[0].vector is None:
+            return None
+        vector = records[0].vector
+        return list(vector) if isinstance(vector, list) else None
+
     async def delete(self, item_id: str) -> None:
         """Delete a single point by ID."""
         await self._client.delete(

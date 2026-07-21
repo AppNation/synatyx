@@ -13,6 +13,7 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 - `context_unrelate` — Remove a relation by relation ID or by source+target pair
 - `context_related` — List the memories linked to an item plus the connecting edges; follows `supersedes` chains into deprecated items
 - `context_visualize` — Render the memory graph as a Mermaid flowchart (nodes colored by layer, deprecated dashed, pinned bold, edges labeled by relation type)
+- `context_alternatives` — Ask "what can I use for X?" — returns memories matching a purpose, each grouped with its alternatives (linked via `alternative_to`/`used_for` edges)
 - `context_summarize` — Summarize and compress working memory for a session
 - `context_score` — Re-rank a list of context items by relevance to a query
 - `context_checkpoint` — Save a named, pinned snapshot of a decision or milestone (importance=1.0)
@@ -87,6 +88,14 @@ Link memories whenever facts belong together — related items retrieved as a gr
 - **A bug/root-cause pair** → `caused_by`; **a sub-decision of a bigger architecture choice** → `part_of`
 - When storing several facts about the same feature or decision, store them (batch mode), then relate them so future retrieval pulls the full picture
 - When retrieving before a significant task, pass `expand_relations: true` so linked context comes along automatically
+
+## Alternative Detection — Act on Store Responses
+
+Every store (L2–L4) automatically checks for existing memories serving the same purpose:
+
+- `auto_linked` in the response → an `alternative_to` edge was already created (near-identical purpose). Nothing to do, but mention it if relevant.
+- `suggestions` in the response → probable same-purpose matches. **Review them immediately**: if a suggestion is genuinely the same purpose, confirm it with `context_relate` (type `alternative_to`); if not, ignore it. Do not ask the user — judge from content.
+- When the user asks "what can I use for X?" or "what are my options for X?", call `context_alternatives` with the purpose as the query.
 
 ## When to Call `context_visualize`
 

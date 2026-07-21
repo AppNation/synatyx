@@ -1,6 +1,6 @@
 # Synatyx — MCP Tools Reference
 
-Synatyx exposes **24 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
+Synatyx exposes **25 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
 
 ---
 
@@ -178,6 +178,15 @@ Render the memory graph as a Mermaid flowchart — nodes colored by layer, depre
 | `include_deprecated` | boolean | — | Show deprecated items (default: true) |
 | `direction` | string | — | `LR` (default) or `TD` |
 | `limit` | integer | — | Max items (default: 50) |
+
+### `context_alternatives`
+Answer "what can I use for X?" — semantic search for a purpose, grouping each match with its alternatives (`alternative_to` / `used_for` neighbors). Alternatives are detected automatically at store time — see [Alternative Detection](alternatives.md).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | ✅ | User identifier |
+| `query` | string | ✅ | Purpose to search, e.g. "approve button component" |
+| `top_k` | integer | — | Max groups (default: 5) |
 
 ---
 

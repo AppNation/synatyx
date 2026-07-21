@@ -83,6 +83,21 @@ class GCSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GC_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
 
+class RelationSettings(BaseSettings):
+    """Automatic alternative-detection on store (see docs/alternatives.md)."""
+
+    detect_enabled: bool = True
+    # similarity >= autolink_threshold -> alternative_to edge created automatically
+    autolink_threshold: float = 0.92
+    # suggest_threshold <= similarity < autolink_threshold -> returned as suggestion
+    suggest_threshold: float = 0.80
+    detect_limit: int = 5
+
+    model_config = SettingsConfigDict(
+        env_prefix="RELATION_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
+
+
 class Settings(BaseSettings):
     app_name: str = "Synatyx Context Engine"
     debug: bool = False
@@ -97,6 +112,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     gc: GCSettings = Field(default_factory=GCSettings)
+    relation: RelationSettings = Field(default_factory=RelationSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

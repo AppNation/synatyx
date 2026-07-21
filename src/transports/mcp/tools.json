@@ -51,7 +51,7 @@
   },
   {
     "name": "context_store",
-    "description": "Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N).",
+    "description": "Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N). After storing (L2-L4), same-purpose detection runs automatically: near-identical memories are auto-linked with alternative_to edges (auto_linked in the response); probable matches are returned as suggestions to confirm with context_relate (suggestions in the response).",
     "parameters": {
       "type": "object",
       "properties": {
@@ -419,6 +419,31 @@
       },
       "required": [
         "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_alternatives",
+    "description": "Answer 'what can I use for X?' — semantic search for a purpose (e.g. 'approve button'), returning each matching memory grouped with its alternatives (items linked via alternative_to or used_for edges). Alternatives are detected automatically at store time: near-identical purposes are auto-linked, probable matches are returned as suggested_relations in the store response.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "query": {
+          "type": "string",
+          "description": "The purpose to search for, e.g. 'approve button component'"
+        },
+        "top_k": {
+          "type": "integer",
+          "description": "Max groups to return (default: 5)"
+        }
+      },
+      "required": [
+        "user_id",
+        "query"
       ]
     }
   },

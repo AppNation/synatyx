@@ -7,6 +7,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from src.config import settings
+from src.core.alternatives import AlternativesService
 from src.core.budget import BudgetManager
 from src.core.ingest import IngestService
 from src.core.project import ProjectManager
@@ -60,6 +62,21 @@ class SynatyxMCPServer:
         storage, _, _, _, _ = await self._get_services(user_id)
         l4_storage = await self._project_manager.get_l4_storage()
         return RelationService(self._postgres, storage, l4_storage)
+
+    async def _get_alternatives_service(self, user_id: str) -> AlternativesService:
+        storage, _, _, _, _ = await self._get_services(user_id)
+        l4_storage = await self._project_manager.get_l4_storage()
+        relations = RelationService(self._postgres, storage, l4_storage)
+        return AlternativesService(storage, l4_storage, self._postgres, relations)
+
+    async def _detect_alternatives_safe(self, user_id: str, item_id: str) -> dict[str, Any]:
+        """Run same-purpose detection after a store; never let it break the store."""
+        try:
+            alternatives = await self._get_alternatives_service(user_id)
+            return await alternatives.detect_for_item(user_id, item_id)
+        except Exception:
+            logger.exception("Alternative detection failed for item %s", item_id)
+            return {"auto_linked": [], "suggestions": []}
 
     async def _get_l4_services(self) -> tuple[QdrantStorage, StoreService, RetrieveService]:
         """Return services backed by the shared ctx_users collection (L4 only)."""
@@ -222,6 +239,15 @@ class SynatyxMCPServer:
                     batch = await _store.store_batch(
                         [entry], user_id=user_id, session_id=args.get("session_id")
                     )
+                    # Same-purpose detection (L1 lives in Redis — no embedding to compare)
+                    if settings.relation.detect_enabled and entry_layer != MemoryLayer.L1:
+                        for r in batch:
+                            if "item_id" in r:
+                                detection = await self._detect_alternatives_safe(
+                                    user_id, r["item_id"]
+                                )
+                                if detection["auto_linked"] or detection["suggestions"]:
+                                    r.update(detection)
                     results.extend(batch)
                 stored = sum(1 for r in results if "error" not in r)
                 return {
@@ -248,7 +274,15 @@ class SynatyxMCPServer:
                 metadata=args.get("metadata"),
                 confidence=args.get("confidence", 1.0),
             )
-            return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn}
+            single_result: dict[str, Any] = {
+                "item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn
+            }
+            # Same-purpose detection (L1 lives in Redis — no embedding to compare)
+            if settings.relation.detect_enabled and layer != MemoryLayer.L1 and embedded:
+                detection = await self._detect_alternatives_safe(user_id, item_ids[0])
+                if detection["auto_linked"] or detection["suggestions"]:
+                    single_result.update(detection)
+            return single_result
 
         elif name == "context_summarize":
             summarize = SummarizeService(self._redis, self._postgres, store=store)
@@ -384,6 +418,15 @@ class SynatyxMCPServer:
             if fetched is None:
                 return {"error": f"Item {args['item_id']!r} not found"}
             return {"item": fetched.model_dump()}
+
+        elif name == "context_alternatives":
+            alternatives_svc = await self._get_alternatives_service(user_id)
+            groups = await alternatives_svc.alternatives(
+                user_id=user_id,
+                query=args["query"],
+                top_k=args.get("top_k", 5),
+            )
+            return {"query": args["query"], "groups": groups, "count": len(groups), **_warn}
 
         elif name == "context_visualize":
             from src.core.visualize import render_mermaid
