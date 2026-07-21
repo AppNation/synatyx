@@ -9,11 +9,12 @@ from mcp.types import TextContent, Tool
 
 from src.config import settings
 from src.core.alternatives import AlternativesService
+from src.core.brief import BriefService
 from src.core.budget import BudgetManager
 from src.core.ingest import IngestService
 from src.core.project import ProjectManager
 from src.core.relation import RelationService
-from src.core.retrieve import RetrieveService
+from src.core.retrieve import RetrieveService, empty_retrieve_diagnostics
 from src.core.score import score_items
 from src.core.skill import SkillService
 from src.core.store import StoreService
@@ -166,7 +167,25 @@ class SynatyxMCPServer:
             if suggestion else {}
         )
 
-        if name == "context_retrieve":
+        if name == "context_brief":
+            l4_storage = await self._project_manager.get_l4_storage()
+            brief_svc = BriefService(storage, l4_storage, self._postgres)
+            slug = await self._project_manager.get_project(user_id)
+            brief_result = await brief_svc.brief(
+                user_id=user_id,
+                project=args.get("project"),
+                session_id=args.get("session_id"),
+                max_tokens=args.get("max_tokens", 2000),
+                recent_days=args.get("recent_days", 7),
+            )
+            return {
+                "project": slug,
+                "collection": storage.collection_name,
+                **brief_result,
+                **_warn,
+            }
+
+        elif name == "context_retrieve":
             requested = [MemoryLayer(l) for l in args.get("memory_layers", [])] or list(MemoryLayer)
             top_k = args.get("top_k", 10)
 
@@ -218,12 +237,38 @@ class SynatyxMCPServer:
                 dumped_items.extend(expanded)
                 total_tokens += sum(len(e.get("content", "")) // 4 for e in expanded)
 
-            return {
+            retrieve_result: dict[str, Any] = {
                 "context_items": dumped_items,
                 "total_tokens": total_tokens,
                 "suggested_budget": suggested_budget,
                 **_warn,
             }
+
+            # Empty results are ambiguous — attach diagnostics so the agent can
+            # tell "nothing stored" from "filters/layers missed". Never let the
+            # extra counting break the retrieve itself.
+            if not final_items:
+                try:
+                    by_layer: dict[str, int] = {}
+                    for _layer in (MemoryLayer.L2, MemoryLayer.L3):
+                        by_layer[_layer.value] = await storage.count_items(
+                            user_id=user_id, memory_layer=_layer
+                        )
+                    l4_storage = await self._project_manager.get_l4_storage()
+                    by_layer[MemoryLayer.L4.value] = await l4_storage.count_items(
+                        user_id=user_id, memory_layer=MemoryLayer.L4
+                    )
+                    retrieve_result["diagnostics"] = empty_retrieve_diagnostics(
+                        total_for_user=sum(by_layer.values()),
+                        items_by_layer=by_layer,
+                        requested_layers=requested,
+                        session_id=args.get("session_id"),
+                        project=args.get("project"),
+                    )
+                except Exception:
+                    logger.exception("Retrieve diagnostics failed (non-critical)")
+
+            return retrieve_result
 
         elif name == "context_store":
             # Batch mode: store several items in one call
@@ -273,6 +318,7 @@ class SynatyxMCPServer:
                 session_id=args.get("session_id"),
                 metadata=args.get("metadata"),
                 confidence=args.get("confidence", 1.0),
+                origin=args.get("origin"),
             )
             single_result: dict[str, Any] = {
                 "item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn

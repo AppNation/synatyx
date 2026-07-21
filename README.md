@@ -8,7 +8,7 @@ Give your LLM a persistent, structured, relevance-scored memory — that survive
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-25%20tools-purple)](docs/mcp-tools.md)
+[![MCP](https://img.shields.io/badge/MCP-26%20tools-purple)](docs/mcp-tools.md)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker&logoColor=white)](docker-compose.yml)
 
 </div>
@@ -56,7 +56,10 @@ Your AI now **remembers** what you decided last week, **recalls** how your codeb
 Store facts, decisions, and context once — retrieve them forever. No more repeating yourself.
 
 **🎯 Relevance-ranked retrieval**
-Hybrid dense + BM25 + MMR pipeline surfaces the right memories, not just the newest ones.
+Hybrid dense + BM25 + MMR pipeline surfaces the right memories, not just the newest ones. Empty results come back with diagnostics explaining why.
+
+**📋 One-call session briefing**
+`context_brief` composes identity, project knowledge, recent changes, failed attempts, and open tasks into a single token-budgeted digest.
 
 **📦 Multi-project isolation**
 Each project gets its own memory space. Switch projects, switch context — nothing bleeds over.
@@ -104,12 +107,13 @@ make                   # starts everything + tails logs
 | Doc | What's inside |
 |-----|--------------|
 | [Local Setup](docs/local-setup.md) | Prerequisites, Docker, IDE config, Makefile reference, troubleshooting |
-| [MCP Tools Reference](docs/mcp-tools.md) | All 25 tools — params, descriptions, examples |
+| [MCP Tools Reference](docs/mcp-tools.md) | All 26 tools — params, descriptions, examples |
 | [Architecture](docs/architecture.md) | 4-layer memory model, retrieval pipeline, tech stack, project structure |
 | [Memory Relations](docs/memory-relations.md) | Typed edges between memories — supersedes chains, retrieval expansion, schema |
 | [Memory Visualization](docs/memory-visualization.md) | `context_visualize` — Mermaid memory graphs, legend, parameters |
 | [Efficiency Improvements](docs/efficiency-improvements.md) | Batch store, direct get, parallel retrieval, reliability fixes |
 | [Alternative Detection](docs/alternatives.md) | Auto-detecting memories that serve the same purpose — thresholds, `context_alternatives` |
+| [Session Brief & Trust](docs/session-brief.md) | `context_brief` one-call startup digest, retrieval diagnostics, provenance origins, attempt records |
 
 ---
 

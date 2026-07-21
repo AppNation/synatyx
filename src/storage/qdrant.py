@@ -377,6 +377,42 @@ class QdrantStorage:
             items.append(self._payload_to_item(r.id, p))
         return items
 
+    async def count_items(
+        self,
+        user_id: str,
+        memory_layer: MemoryLayer | None = None,
+        project: str | None = None,
+        session_id: str | None = None,
+        include_deprecated: bool = False,
+    ) -> int:
+        """Exact count of a user's items — used for brief stats and retrieval diagnostics."""
+        conditions: list[Any] = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if not include_deprecated:
+            conditions.append(
+                FieldCondition(key="is_deprecated", match=MatchValue(value=False))
+            )
+        if memory_layer:
+            conditions.append(
+                FieldCondition(key="memory_layer", match=MatchValue(value=memory_layer.value))
+            )
+        if project:
+            conditions.append(
+                FieldCondition(key="project", match=MatchValue(value=project))
+            )
+        if session_id:
+            conditions.append(
+                FieldCondition(key="session_id", match=MatchValue(value=session_id))
+            )
+
+        result = await self._client.count(
+            collection_name=self._collection_name,
+            count_filter=Filter(must=conditions),
+            exact=True,
+        )
+        return result.count
+
     async def ping(self) -> bool:
         try:
             await self._client.get_collections()

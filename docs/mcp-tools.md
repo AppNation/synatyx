@@ -1,6 +1,6 @@
 # Synatyx — MCP Tools Reference
 
-Synatyx exposes **25 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
+Synatyx exposes **26 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
 
 ---
 
@@ -25,6 +25,17 @@ Return the currently active project, or suggest one based on the workspace folde
 
 ## Memory
 
+### `context_brief`
+One-call session-start digest — replaces the get_project → retrieve → task_list startup dance. Returns a token-budgeted briefing: `identity` (L4 preferences), `last_session` (recent L2), `project_knowledge` (pinned checkpoints + top L3), `recent_changes`, `recent_attempts` (tried-and-failed records), `open_tasks`, and `stats`. See [Session Brief & Trust](session-brief.md).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | ✅ | User identifier |
+| `session_id` | string | — | Project slug — scopes open tasks |
+| `project` | string | — | Qdrant-level project filter |
+| `max_tokens` | integer | — | Budget for the whole briefing (default: 2000) |
+| `recent_days` | integer | — | Window for `recent_changes` (default: 7) |
+
 ### `context_store`
 Save a fact, decision, or note into the appropriate memory layer.
 
@@ -37,7 +48,10 @@ Save a fact, decision, or note into the appropriate memory layer.
 | `session_id` | string | — | Project slug for scoping |
 | `metadata` | object | — | Extra metadata |
 | `confidence` | float | — | 0.0–1.0 (default: 1.0) |
+| `origin` | string | — | Provenance: `user-stated`, `agent-inferred` (default), `web-search` — see [Session Brief & Trust](session-brief.md) |
 | `items` | array | — | **Batch mode**: store many entries in one call — see [Efficiency Improvements](efficiency-improvements.md) |
+
+To record a failed approach, store an L2 item with `metadata: {type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these so future sessions don't repeat dead ends.
 
 ### `context_retrieve`
 Hybrid semantic search across memory layers — dense + BM25 + MMR + score fusion.
@@ -51,6 +65,8 @@ Hybrid semantic search across memory layers — dense + BM25 + MMR + score fusio
 | `top_k` | integer | — | Max results (default: 10) |
 | `memory_layers` | array | — | Filter to specific layers (default: all) |
 | `expand_relations` | boolean | — | Also return 1-hop related memories, tagged `via_relation` — see [Memory Relations](memory-relations.md) |
+
+When the result is empty, the response includes a `diagnostics` block (item counts by layer, filters applied, and a hint) that distinguishes "nothing stored" from "filters/layers missed" — see [Session Brief & Trust](session-brief.md).
 
 ### `context_summarize`
 Compress session working memory into an L2 episodic summary via LLM. Runs async.

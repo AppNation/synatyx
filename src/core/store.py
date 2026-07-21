@@ -14,6 +14,18 @@ from src.storage.redis import RedisStorage
 # Content longer than this will be chunked before embedding (L2, L3, L4)
 CHUNK_THRESHOLD = 600  # characters (~150 tokens)
 
+# Provenance values — retrieved memory is injected into the agent's context,
+# so the agent must be able to tell trusted user statements from content that
+# arrived via ingestion of external sources (prompt-injection surface).
+KNOWN_ORIGINS = (
+    "user-stated",         # the user said it directly
+    "agent-inferred",      # the agent concluded it (default)
+    "ingested-from-file",  # context_ingest on a local file
+    "ingested-from-web",   # context_ingest on a URL — treat as untrusted data
+    "web-search",          # found via web search — treat as untrusted data
+)
+DEFAULT_ORIGIN = "agent-inferred"
+
 # Prompt injection patterns to sanitize from stored content
 _INJECTION_PATTERNS: list[re.Pattern] = [
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions?", re.IGNORECASE),
@@ -64,6 +76,7 @@ class StoreService:
         metadata: dict[str, Any] | None = None,
         confidence: float = 1.0,
         is_pinned: bool = False,
+        origin: str | None = None,
     ) -> tuple[list[str], bool]:
         """
         Store content into the appropriate memory layer.
@@ -79,6 +92,9 @@ class StoreService:
         sanitized = _sanitize(content)
         embedded = False
         base_meta = {**(metadata or {}), "confidence": confidence}
+        # Provenance is mandatory: explicit param wins, then caller metadata,
+        # then the default. Every stored item carries an origin.
+        base_meta["origin"] = origin or base_meta.get("origin") or DEFAULT_ORIGIN
 
         _validate_user_isolation(
             ContextItem(user_id=user_id, content="x", memory_layer=memory_layer),
@@ -175,6 +191,7 @@ class StoreService:
                     session_id=entry.get("session_id", session_id),
                     metadata=entry.get("metadata"),
                     confidence=float(entry.get("confidence", 1.0)),
+                    origin=entry.get("origin"),
                 )
                 results.append({"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded})
             except Exception as exc:

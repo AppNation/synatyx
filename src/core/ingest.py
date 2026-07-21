@@ -39,6 +39,14 @@ class IngestService:
         parser = get_parser(source)
         chunks = await parser.parse(source)
 
+        # Provenance: ingested content is external data, not something the
+        # user or agent asserted — tag it so retrieval can flag trust level.
+        origin = (
+            "ingested-from-web"
+            if source.startswith(("http://", "https://"))
+            else "ingested-from-file"
+        )
+
         stored = 0
         failed = 0
 
@@ -59,6 +67,7 @@ class IngestService:
                     importance=importance,
                     session_id=session_id,
                     metadata=metadata,
+                    origin=origin,
                 )
                 stored += 1
                 logger.debug("Ingested chunk %d/%d from %s", stored, len(chunks), source)
