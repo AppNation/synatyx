@@ -161,7 +161,7 @@
         },
         "metadata": {
           "type": "object",
-          "description": "Extra metadata (optional)"
+          "description": "Extra metadata (optional). Conventions: files: [paths] — the files this fact refers to; their content hashes are stored so retrieval can flag the memory possibly_stale when they change. fact_type: 'file-location' | 'config' | 'architecture' | 'preference' — controls type-aware TTL decay in GC (file locations expire fast, preferences slowly). type: 'attempt' marks a tried-and-failed record (see description)."
         },
         "confidence": {
           "type": "number",
@@ -892,6 +892,22 @@
   {
     "name": "context_gc_stats",
     "description": "Return garbage collection statistics for the active project — how many items are expiring soon, already deprecated, pending hard delete, or protected.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        }
+      },
+      "required": [
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_consolidate",
+    "description": "Manually trigger sleep-style memory consolidation for the active project: clusters of similar episodic (L2) memories (cosine >= threshold, cluster size >= minimum) are merged into a single L3 fact; the originals are deprecated (never deleted) and linked to the merged item with supersedes edges. Attempt records, pinned items, and existing consolidations are never merged. The GC daemon also runs this automatically in the background when enabled.",
     "parameters": {
       "type": "object",
       "properties": {

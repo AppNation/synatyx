@@ -124,8 +124,7 @@ class GarbageCollector:
         if base_ttl is None:
             return "skipped"
 
-        importance = float(item.get("importance", 0.5))
-        effective_ttl = base_ttl * (1 + importance * self._settings.importance_multiplier)
+        effective_ttl = self.effective_ttl(base_ttl, item)
 
         last_touched_raw = item.get("last_accessed_at") or item.get("created_at")
         if not last_touched_raw:
@@ -146,6 +145,23 @@ class GarbageCollector:
             reason=f"not accessed for {int(effective_ttl)} days",
         )
         return "deprecated"
+
+    def effective_ttl(self, base_ttl: float, item: dict[str, Any]) -> float:
+        """TTL after importance scaling and type-aware decay.
+
+        effective = base × (1 + importance × importance_multiplier) × type_multiplier
+
+        where type_multiplier comes from settings.fact_type_multipliers keyed
+        by metadata.fact_type — file locations rot fast, preferences slowly.
+        Untyped items keep the classic importance-only behaviour.
+        """
+        importance = float(item.get("importance", 0.5))
+        ttl = base_ttl * (1 + importance * self._settings.importance_multiplier)
+
+        fact_type = (item.get("metadata") or {}).get("fact_type")
+        if fact_type:
+            ttl *= self._settings.fact_type_multipliers.get(fact_type, 1.0)
+        return ttl
 
     def _is_immune(self, item: dict[str, Any]) -> bool:
         return (

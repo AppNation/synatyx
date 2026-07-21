@@ -109,6 +109,8 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     # Inject the fully-wired low-level Server into FastMCP so that handle_sse
     # picks it up on every incoming request.
     mcp._mcp_server = synatyx._server
+    # Expose the server to plain REST routes (e.g. /capture) via app state.
+    _app.state.synatyx = synatyx
 
     logger.info("Synatyx MCP HTTP server ready on %s:%d", _host, _port)
 
@@ -125,6 +127,48 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 
 async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "synatyx-mcp"})
+
+
+# ---------------------------------------------------------------------------
+# Capture endpoint — automatic memory capture from outside the MCP loop.
+# Session-end hooks (Claude Code / Cursor), CI jobs, or cron scripts POST a
+# digest here so memory writes stop depending on agent discipline. Protected
+# by the admin-key middleware like every non-public path.
+# ---------------------------------------------------------------------------
+
+async def capture(request: Request) -> JSONResponse:
+    synatyx = getattr(request.app.state, "synatyx", None)
+    if synatyx is None:
+        return JSONResponse({"error": "server not ready"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    user_id = str(body.get("user_id") or "").strip()
+    content = str(body.get("content") or "").strip()
+    if not user_id or not content:
+        return JSONResponse({"error": "user_id and content are required"}, status_code=400)
+
+    try:
+        result = await synatyx.capture(
+            user_id=user_id,
+            content=content,
+            session_id=body.get("session_id"),
+            project=body.get("project"),
+            memory_layer=body.get("memory_layer", "L2"),
+            importance=float(body.get("importance", 0.6)),
+            metadata=body.get("metadata"),
+            origin=body.get("origin"),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        logger.exception("Capture failed")
+        return JSONResponse({"error": "capture failed"}, status_code=500)
+
+    return JSONResponse({"status": "captured", **result})
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +194,10 @@ else:
     logger.warning("AUTH_ADMIN_KEY not set — MCP HTTP server is UNAUTHENTICATED")
 
 app = Starlette(
-    routes=_sse_app.routes + [Route("/health", health)],
+    routes=_sse_app.routes + [
+        Route("/health", health),
+        Route("/capture", capture, methods=["POST"]),
+    ],
     middleware=_middleware,
     lifespan=lifespan,
 )

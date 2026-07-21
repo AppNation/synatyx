@@ -79,8 +79,36 @@ class GCSettings(BaseSettings):
     l3_base_ttl_days: int = 90
     grace_period_days: int = 30       # days between soft deprecation and hard delete
     importance_multiplier: float = 3.0  # effective_ttl = base × (1 + importance × multiplier)
+    # Type-aware decay: facts rot at different speeds. Items tagged with
+    # metadata.fact_type get their effective TTL scaled by these multipliers
+    # (file locations go stale in days; preferences barely rot at all).
+    # Override via GC_FACT_TYPE_MULTIPLIERS='{"file-location": 0.3, ...}'.
+    fact_type_multipliers: dict[str, float] = Field(
+        default_factory=lambda: {
+            "file-location": 0.3,
+            "config": 0.7,
+            "architecture": 1.5,
+            "preference": 3.0,
+        }
+    )
 
     model_config = SettingsConfigDict(env_prefix="GC_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
+
+
+class ConsolidationSettings(BaseSettings):
+    """Background merge of overlapping episodic (L2) memories into L3 facts."""
+
+    enabled: bool = True
+    # cosine similarity two L2 items must reach to land in the same cluster
+    similarity_threshold: float = 0.83
+    # clusters smaller than this stay untouched
+    min_cluster_size: int = 3
+    # safety valve: max merges per run across all collections
+    max_merges_per_run: int = 20
+
+    model_config = SettingsConfigDict(
+        env_prefix="CONSOLIDATION_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 class RelationSettings(BaseSettings):
@@ -113,6 +141,7 @@ class Settings(BaseSettings):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     gc: GCSettings = Field(default_factory=GCSettings)
     relation: RelationSettings = Field(default_factory=RelationSettings)
+    consolidation: ConsolidationSettings = Field(default_factory=ConsolidationSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

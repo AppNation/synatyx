@@ -87,6 +87,7 @@ def main() -> None:
 
 
 async def _run_gc() -> None:
+    from src.core.consolidate import Consolidator
     from src.core.gc import GarbageCollector
     from src.config import settings
     from src.storage.postgres import PostgresStorage
@@ -106,6 +107,7 @@ async def _run_gc() -> None:
     await _connect_with_retry("PostgreSQL", postgres.connect)
 
     gc = GarbageCollector(qdrant=qdrant, postgres=postgres, settings=settings.gc)
+    consolidator = Consolidator(qdrant=qdrant, postgres=postgres, settings=settings.consolidation)
 
     while True:
         if settings.gc.enabled:
@@ -116,6 +118,14 @@ async def _run_gc() -> None:
                 logger.error("GC pass failed: %s", exc, exc_info=True)
         else:
             logger.info("GC disabled — sleeping")
+
+        if settings.consolidation.enabled:
+            try:
+                summary = await consolidator.run_once()
+                logger.info("Consolidation pass complete: %s", summary)
+            except Exception as exc:
+                logger.error("Consolidation pass failed: %s", exc, exc_info=True)
+
         await asyncio.sleep(interval_seconds)
 
 

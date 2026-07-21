@@ -53,6 +53,12 @@ def _dump(item: ContextItem, max_chars: int | None = None) -> dict[str, Any]:
     }
     if truncated:
         dumped["truncated"] = True
+    if item.metadata.get("file_hashes"):
+        from src.core.staleness import check_stale_files
+        stale = check_stale_files(item.metadata)
+        if stale:
+            dumped["possibly_stale"] = True
+            dumped["stale_files"] = stale
     return dumped
 
 

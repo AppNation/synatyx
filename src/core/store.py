@@ -96,6 +96,19 @@ class StoreService:
         # then the default. Every stored item carries an origin.
         base_meta["origin"] = origin or base_meta.get("origin") or DEFAULT_ORIGIN
 
+        # Staleness anchors: when the caller lists the files this fact refers
+        # to (metadata.files), hash them now so retrieval can detect that the
+        # ground truth changed underneath the memory.
+        if isinstance(base_meta.get("files"), list) and "file_hashes" not in base_meta:
+            from src.core.staleness import compute_file_hashes
+            try:
+                hashes = compute_file_hashes(base_meta["files"])
+                if hashes:
+                    base_meta["file_hashes"] = hashes
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("File hashing failed", exc_info=True)
+
         _validate_user_isolation(
             ContextItem(user_id=user_id, content="x", memory_layer=memory_layer),
             user_id,
