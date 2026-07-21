@@ -110,6 +110,42 @@ class SynatyxMCPServer:
         retrieve, store, ingest = self._svc_cache[key]
         return storage, retrieve, store, ingest, suggestion
 
+    async def capture(
+        self,
+        user_id: str,
+        content: str,
+        session_id: str | None = None,
+        project: str | None = None,
+        memory_layer: str = "L2",
+        importance: float = 0.6,
+        metadata: dict[str, Any] | None = None,
+        origin: str | None = None,
+    ) -> dict[str, Any]:
+        """Store a memory pushed from outside the MCP loop (session-end hooks,
+        CI jobs, cron). Same pipeline as context_store — sanitization,
+        chunking, provenance, alternative detection are all preserved."""
+        from src.models.memory_layer import MemoryLayer as ML
+
+        _, _, store, _, _ = await self._get_services(user_id)
+        layer = ML(memory_layer)
+        if layer == ML.L4:
+            store = (await self._get_l4_services())[1]
+
+        meta = {"source": "capture", **(metadata or {})}
+        if project:
+            meta.setdefault("project", project)
+
+        item_ids, embedded = await store.store(
+            content=content,
+            user_id=user_id,
+            memory_layer=layer,
+            importance=importance,
+            session_id=session_id,
+            metadata=meta,
+            origin=origin,
+        )
+        return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded}
+
     def _register_handlers(self) -> None:
         @self._server.list_tools()
         async def list_tools() -> list[Tool]:
@@ -224,7 +260,8 @@ class SynatyxMCPServer:
             final_items = combined_items[:top_k]
             total_tokens = sum(i.token_estimate for i in final_items)
 
-            dumped_items = [i.model_dump() for i in final_items]
+            from src.core.staleness import annotate_staleness
+            dumped_items = [annotate_staleness(i.model_dump()) for i in final_items]
 
             # Optional 1-hop relation expansion — pull in linked memories
             if args.get("expand_relations") and final_items:
@@ -678,6 +715,24 @@ class SynatyxMCPServer:
                 return {"error": f"Skill {args['name']!r} not found"}
             return {"deleted": True, "name": args["name"]}
 
+        elif name == "context_consolidate":
+            from src.core.consolidate import Consolidator
+            consolidator = Consolidator(
+                qdrant=storage, postgres=self._postgres, settings=settings.consolidation
+            )
+            # Manual trigger runs on the active project's collection only —
+            # the GC daemon handles the all-collections background sweep.
+            stats = await consolidator._process_collection(
+                storage, storage.collection_name, {"merged_clusters": 0}
+            )
+            return {
+                "collection": storage.collection_name,
+                **stats,
+                "similarity_threshold": settings.consolidation.similarity_threshold,
+                "min_cluster_size": settings.consolidation.min_cluster_size,
+                **_warn,
+            }
+
         elif name == "context_gc_stats":
             # _get_services returns (storage, retrieve, store, ingest, suggestion)
             qdrant = storage
@@ -714,8 +769,7 @@ class SynatyxMCPServer:
                     protected += 1
                     continue
 
-                importance = float(item.get("importance", 0.5))
-                effective_ttl = base_ttl * (1 + importance * _settings.gc.importance_multiplier)
+                effective_ttl = gc.effective_ttl(base_ttl, item)
                 last_raw = item.get("last_accessed_at") or item.get("created_at")
                 if last_raw:
                     last = datetime.fromisoformat(last_raw)

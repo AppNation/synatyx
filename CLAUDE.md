@@ -15,6 +15,7 @@ If a `context_retrieve` ever comes back empty, read its `diagnostics` block — 
 
 - **MANDATORY: Always call `context_retrieve` BEFORE reading any file, searching code, or answering any question about the project** — if memory has sufficient context, answer directly without touching the filesystem. Only fall through to file reads or code searches if memory explicitly lacks the answer or user mentioned read directly from files.
 - Call `context_store` silently whenever a decision, fact, or convention is established — pass `origin` ("user-stated" when the user said it, "agent-inferred" for your own conclusions, "web-search" for facts found online)
+- When a fact refers to specific files, pass `metadata.files: [paths]` (hashed for staleness detection) and `metadata.fact_type` ("file-location" | "config" | "architecture" | "preference") for type-aware decay. Treat retrieved memories flagged `possibly_stale` as hypotheses — verify against the file first
 - After a failed approach, store an attempt record: L2 with metadata `{type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these next session
 - Never ask the user whether to store something — just do it
 - Use `session_id` as the project slug for all project-scoped operations

@@ -287,10 +287,13 @@ class QdrantStorage:
         include_deprecated: bool = False,
         limit: int = 1000,
         offset: str | None = None,
+        with_vectors: bool = False,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Scroll ALL items in the collection without user_id filter — for GC use only.
+        """Scroll ALL items in the collection without user_id filter — for GC/consolidation use only.
 
-        Returns (items_payload_list, next_offset) for pagination.
+        Returns (items_payload_list, next_offset) for pagination. With
+        with_vectors=True each payload dict also carries its embedding under
+        "_vector".
         """
         conditions: list[Any] = []
         if not include_deprecated:
@@ -310,13 +313,15 @@ class QdrantStorage:
             limit=limit,
             offset=offset,
             with_payload=True,
-            with_vectors=False,
+            with_vectors=with_vectors,
         )
 
         items = []
         for r in results:
             p = r.payload or {}
             p["_id"] = str(r.id)
+            if with_vectors and isinstance(r.vector, list):
+                p["_vector"] = r.vector
             items.append(p)
 
         next_offset = str(next_page) if next_page else None

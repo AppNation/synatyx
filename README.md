@@ -8,7 +8,7 @@ Give your LLM a persistent, structured, relevance-scored memory — that survive
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-26%20tools-purple)](docs/mcp-tools.md)
+[![MCP](https://img.shields.io/badge/MCP-27%20tools-purple)](docs/mcp-tools.md)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker&logoColor=white)](docker-compose.yml)
 
 </div>
@@ -64,6 +64,12 @@ Hybrid dense + BM25 + MMR pipeline surfaces the right memories, not just the new
 **📦 Multi-project isolation**
 Each project gets its own memory space. Switch projects, switch context — nothing bleeds over.
 
+**🪝 Automatic session capture**
+A SessionEnd hook posts a digest of every session to `/capture` — memory gets written even when the agent forgets to store anything.
+
+**🧹 Self-maintaining memory**
+File-hash staleness detection, type-aware TTL decay, and background consolidation that merges episodic noise into stable L3 facts.
+
 **🔖 Checkpoints that never disappear**
 Pin critical decisions as named snapshots. Deprecate when superseded — never permanently deleted.
 
@@ -107,13 +113,15 @@ make                   # starts everything + tails logs
 | Doc | What's inside |
 |-----|--------------|
 | [Local Setup](docs/local-setup.md) | Prerequisites, Docker, IDE config, Makefile reference, troubleshooting |
-| [MCP Tools Reference](docs/mcp-tools.md) | All 26 tools — params, descriptions, examples |
+| [MCP Tools Reference](docs/mcp-tools.md) | All 27 tools — params, descriptions, examples |
 | [Architecture](docs/architecture.md) | 4-layer memory model, retrieval pipeline, tech stack, project structure |
 | [Memory Relations](docs/memory-relations.md) | Typed edges between memories — supersedes chains, retrieval expansion, schema |
 | [Memory Visualization](docs/memory-visualization.md) | `context_visualize` — Mermaid memory graphs, legend, parameters |
 | [Efficiency Improvements](docs/efficiency-improvements.md) | Batch store, direct get, parallel retrieval, reliability fixes |
 | [Alternative Detection](docs/alternatives.md) | Auto-detecting memories that serve the same purpose — thresholds, `context_alternatives` |
 | [Session Brief & Trust](docs/session-brief.md) | `context_brief` one-call startup digest, retrieval diagnostics, provenance origins, attempt records |
+| [Automatic Capture](docs/automatic-capture.md) | `/capture` endpoint + Claude Code SessionEnd hook — memory writes without agent discipline |
+| [Memory Hygiene](docs/memory-hygiene.md) | File-hash staleness flags, type-aware TTL decay, background L2→L3 consolidation |
 
 ---
 

@@ -1,6 +1,6 @@
 # Synatyx — MCP Tools Reference
 
-Synatyx exposes **26 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
+Synatyx exposes **27 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
 
 ---
 
@@ -46,7 +46,7 @@ Save a fact, decision, or note into the appropriate memory layer.
 | `memory_layer` | L1\|L2\|L3\|L4 | ✅ | Target layer |
 | `importance` | float | — | 0.0–1.0 (default: 0.5) |
 | `session_id` | string | — | Project slug for scoping |
-| `metadata` | object | — | Extra metadata |
+| `metadata` | object | — | Extra metadata. Conventions: `files: [paths]` → content-hashed for staleness flags; `fact_type` → type-aware GC decay — see [Memory Hygiene](memory-hygiene.md) |
 | `confidence` | float | — | 0.0–1.0 (default: 1.0) |
 | `origin` | string | — | Provenance: `user-stated`, `agent-inferred` (default), `web-search` — see [Session Brief & Trust](session-brief.md) |
 | `items` | array | — | **Batch mode**: store many entries in one call — see [Efficiency Improvements](efficiency-improvements.md) |
@@ -297,6 +297,15 @@ Remove a skill from PostgreSQL and deprecate its Qdrant embedding.
 | `user_id` | string | ✅ | User identifier |
 
 ---
+
+## Maintenance
+
+### `context_consolidate`
+Manually trigger sleep-style consolidation for the active project: clusters of similar L2 memories merge into one L3 fact; originals are deprecated and linked with `supersedes` edges. The GC daemon also runs this in the background. See [Memory Hygiene](memory-hygiene.md).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | ✅ | User identifier |
 
 ## Garbage Collection
 
