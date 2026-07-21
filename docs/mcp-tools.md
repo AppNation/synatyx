@@ -1,6 +1,6 @@
 # Synatyx — MCP Tools Reference
 
-Synatyx exposes **18 MCP tools** over stdio, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
+Synatyx exposes **24 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
 
 ---
 
@@ -37,6 +37,7 @@ Save a fact, decision, or note into the appropriate memory layer.
 | `session_id` | string | — | Project slug for scoping |
 | `metadata` | object | — | Extra metadata |
 | `confidence` | float | — | 0.0–1.0 (default: 1.0) |
+| `items` | array | — | **Batch mode**: store many entries in one call — see [Efficiency Improvements](efficiency-improvements.md) |
 
 ### `context_retrieve`
 Hybrid semantic search across memory layers — dense + BM25 + MMR + score fusion.
@@ -49,6 +50,7 @@ Hybrid semantic search across memory layers — dense + BM25 + MMR + score fusio
 | `project` | string | — | Qdrant-level project filter |
 | `top_k` | integer | — | Max results (default: 10) |
 | `memory_layers` | array | — | Filter to specific layers (default: all) |
+| `expand_relations` | boolean | — | Also return 1-hop related memories, tagged `via_relation` — see [Memory Relations](memory-relations.md) |
 
 ### `context_summarize`
 Compress session working memory into an L2 episodic summary via LLM. Runs async.
@@ -91,6 +93,7 @@ Mark an item as superseded. It stays in the store but is excluded from retrieval
 | `item_id` | string | ✅ | ID of item to deprecate |
 | `user_id` | string | ✅ | User identifier |
 | `reason` | string | — | Why it's deprecated |
+| `superseded_by` | string | — | ID of the replacing item — also creates a `supersedes` relation edge |
 
 ### `context_list`
 Browse stored items without vector search — for reviewing checkpoints or finding items to deprecate.
@@ -117,6 +120,64 @@ Supports: `.docx`, `.pdf`, `.md`, `.py`, `.ts`, `.go`, `.rs`, and any `http(s):/
 | `importance` | float | — | 0.0–1.0 (default: 0.8) |
 | `project` | string | — | Project tag |
 | `session_id` | string | — | Project slug |
+
+---
+
+## Relations & Graph
+
+> Full guides: [Memory Relations](memory-relations.md) · [Memory Visualization](memory-visualization.md)
+
+### `context_relate`
+Link two memories with a typed, directed edge (`related_to`, `supersedes`, `part_of`, `depends_on`, `caused_by`, or custom).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source_id` | string | ✅ | Item the edge starts from |
+| `target_id` | string | ✅ | Item the edge points to |
+| `user_id` | string | ✅ | User identifier |
+| `relation_type` | string | — | Edge type (default: `related_to`) |
+| `metadata` | object | — | Extra context on the edge |
+
+### `context_unrelate`
+Delete edge(s) by relation ID or by source+target pair.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | ✅ | User identifier |
+| `relation_id` | string | — | Exact edge to delete |
+| `source_id` / `target_id` | string | — | Endpoint pair (alternative) |
+| `relation_type` | string | — | Narrow deletion to this type |
+
+### `context_related`
+List memories linked to an item plus the connecting edges. Follows supersedes chains into deprecated items.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `item_id` | string | ✅ | Anchor item |
+| `user_id` | string | ✅ | User identifier |
+| `relation_type` | string | — | Only follow this edge type |
+| `direction` | string | — | `out`, `in`, or `both` (default) |
+
+### `context_get`
+Fetch one memory directly by ID — no vector search. Checks the project collection, then `ctx_users`.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `item_id` | string | ✅ | Item to fetch |
+| `user_id` | string | ✅ | User identifier |
+
+### `context_visualize`
+Render the memory graph as a Mermaid flowchart — nodes colored by layer, deprecated dashed, pinned bold, edges labeled by type.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | ✅ | User identifier |
+| `project` | string | — | Filter by project |
+| `memory_layer` | L1\|L2\|L3\|L4 | — | Filter by layer (L4 reads `ctx_users`) |
+| `relations_only` | boolean | — | Hide isolated nodes |
+| `include_deprecated` | boolean | — | Show deprecated items (default: true) |
+| `direction` | string | — | `LR` (default) or `TD` |
+| `limit` | integer | — | Max items (default: 50) |
 
 ---
 

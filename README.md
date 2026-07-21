@@ -8,7 +8,7 @@ Give your LLM a persistent, structured, relevance-scored memory — that survive
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-18%20tools-purple)](docs/mcp-tools.md)
+[![MCP](https://img.shields.io/badge/MCP-24%20tools-purple)](docs/mcp-tools.md)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker&logoColor=white)](docker-compose.yml)
 
 </div>
@@ -104,8 +104,11 @@ make                   # starts everything + tails logs
 | Doc | What's inside |
 |-----|--------------|
 | [Local Setup](docs/local-setup.md) | Prerequisites, Docker, IDE config, Makefile reference, troubleshooting |
-| [MCP Tools Reference](docs/mcp-tools.md) | All 18 tools — params, descriptions, examples |
+| [MCP Tools Reference](docs/mcp-tools.md) | All 24 tools — params, descriptions, examples |
 | [Architecture](docs/architecture.md) | 4-layer memory model, retrieval pipeline, tech stack, project structure |
+| [Memory Relations](docs/memory-relations.md) | Typed edges between memories — supersedes chains, retrieval expansion, schema |
+| [Memory Visualization](docs/memory-visualization.md) | `context_visualize` — Mermaid memory graphs, legend, parameters |
+| [Efficiency Improvements](docs/efficiency-improvements.md) | Batch store, direct get, parallel retrieval, reliability fixes |
 
 ---
 
