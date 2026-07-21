@@ -2,6 +2,39 @@
 
 Memory that relies on the agent remembering to write is a diary nobody keeps. Agents forget, get interrupted, or run out of context — and the project's memory silently stays empty. Automatic capture removes the discipline dependency: **the session gets captured even when the agent stored nothing.**
 
+Two mechanisms, from zero-setup to richest:
+
+| Mechanism | Setup | Covers | Captures |
+|---|---|---|---|
+| **Server-side session tracking** | none — on by default | every MCP client (Claude Code, Cursor, Desktop, custom) | what the session *worked on*: topics retrieved, facts stored, checkpoints, tasks |
+| **SessionEnd hook → `/capture`** | one hook per machine | Claude Code | conversation content: opening request + closing assistant summary |
+
+They compose — tracking is the safety net that can never be forgotten; the hook adds conversation-level digests on top.
+
+---
+
+## Server-side session tracking (zero setup)
+
+The Synatyx server already *sees* every session, because all memory traffic flows through it. Tracking captures implicitly:
+
+1. **Trace** — every meaningful tool call (`context_retrieve`, `context_store`, `context_checkpoint`, `context_ingest`, task ops, `context_brief`) appends a compact event to a Redis buffer keyed by `user + session scope`. Recording is exception-isolated and can never affect the tool call. Lookups, lists, and failed calls are not traced.
+2. **Compact** — a background loop (runs inside the MCP server process, stdio and HTTP alike) wakes every `TRACKING_COMPACT_INTERVAL_SECONDS` and finds traces idle for `TRACKING_IDLE_MINUTES`+. Each becomes one L2 memory:
+
+```
+[Session trace: synatyx, 2026-07-21 09:02–11:31 UTC, 14 memory ops]
+Topics explored: capture endpoint auth; consolidation thresholds
+Facts stored: /capture requires X-Auth-Key; Consolidator skips attempt records
+Checkpoints: capture-shipped
+Tasks: added "rotate admin key"; marked a task done
+Activity: brief×1, retrieve×6, store×4, checkpoint×1, task_add×1, task_update×1
+```
+
+Stored with `metadata: {type: "session-trace", source: "activity-tracker"}`, `origin: agent-inferred` — surfaced by `context_brief` in `last_session`, and eligible for [consolidation](memory-hygiene.md) once traces accumulate.
+
+Traces smaller than `TRACKING_MIN_EVENTS` are dropped as noise. Buffers are capped (`TRACKING_MAX_EVENTS`) and carry a Redis TTL safety net. Disable with `TRACKING_ENABLED=false`.
+
+What tracking *cannot* see is the conversation text itself — for that, add the hook below.
+
 ---
 
 ## How it works

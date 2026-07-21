@@ -19,6 +19,7 @@ from src.core.score import score_items
 from src.core.skill import SkillService
 from src.core.store import StoreService
 from src.core.summarize import SummarizeService
+from src.core.tracking import SessionTracker
 from src.models.memory_layer import MemoryLayer
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
@@ -48,6 +49,7 @@ class SynatyxMCPServer:
         self._svc_cache: dict[str, tuple[RetrieveService, StoreService, IngestService]] = {}
         self._budget = BudgetManager()
         self._skill_svc_cache: dict[str, SkillService] = {}
+        self._tracker = SessionTracker(redis, settings.tracking)
         self._register_handlers()
 
     async def _get_skill_service(self, user_id: str) -> SkillService:
@@ -166,6 +168,8 @@ class SynatyxMCPServer:
             except Exception as exc:
                 logger.exception("Tool %r raised an error", name)
                 result = {"error": str(exc), "tool": name}
+            # Implicit session capture — record() swallows its own errors
+            await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
             return [TextContent(type="text", text=json.dumps(result, default=str))]
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -793,8 +797,35 @@ class SynatyxMCPServer:
 
         raise ValueError(f"Unknown tool: {name}")
 
+    async def _store_for_user(self, user_id: str):
+        """StoreService bound to the user's active project — for trace compaction."""
+        _, _, store, _, _ = await self._get_services(user_id)
+        return store
+
+    async def run_tracking_loop(self) -> None:
+        """Periodically compact idle session traces into L2 memories.
+
+        Runs for the lifetime of the server process (stdio or HTTP). Cancelled
+        on shutdown; every pass is exception-isolated.
+        """
+        import asyncio
+
+        interval = settings.tracking.compact_interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._tracker.compact_idle(self._store_for_user)
+            except Exception:
+                logger.exception("Tracking compaction pass failed")
+
     async def run_stdio(self) -> None:
         """Run the MCP server over stdio (for OpenClaw / Claude Desktop)."""
-        async with stdio_server() as (read_stream, write_stream):
-            await self._server.run(read_stream, write_stream, self._server.create_initialization_options())
+        import asyncio
+
+        tracking_task = asyncio.create_task(self.run_tracking_loop())
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                await self._server.run(read_stream, write_stream, self._server.create_initialization_options())
+        finally:
+            tracking_task.cancel()
 

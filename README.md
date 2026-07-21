@@ -65,7 +65,7 @@ Hybrid dense + BM25 + MMR pipeline surfaces the right memories, not just the new
 Each project gets its own memory space. Switch projects, switch context — nothing bleeds over.
 
 **🪝 Automatic session capture**
-A SessionEnd hook posts a digest of every session to `/capture` — memory gets written even when the agent forgets to store anything.
+Server-side session tracking turns every session's memory traffic into an L2 trace with zero client setup — plus an optional SessionEnd hook that posts conversation digests to `/capture`. Memory gets written even when the agent forgets to store anything.
 
 **🧹 Self-maintaining memory**
 File-hash staleness detection, type-aware TTL decay, and background consolidation that merges episodic noise into stable L3 facts.
@@ -120,7 +120,7 @@ make                   # starts everything + tails logs
 | [Efficiency Improvements](docs/efficiency-improvements.md) | Batch store, direct get, parallel retrieval, reliability fixes |
 | [Alternative Detection](docs/alternatives.md) | Auto-detecting memories that serve the same purpose — thresholds, `context_alternatives` |
 | [Session Brief & Trust](docs/session-brief.md) | `context_brief` one-call startup digest, retrieval diagnostics, provenance origins, attempt records |
-| [Automatic Capture](docs/automatic-capture.md) | `/capture` endpoint + Claude Code SessionEnd hook — memory writes without agent discipline |
+| [Automatic Capture](docs/automatic-capture.md) | Zero-setup server-side session tracking + `/capture` endpoint + SessionEnd hook — memory writes without agent discipline |
 | [Memory Hygiene](docs/memory-hygiene.md) | File-hash staleness flags, type-aware TTL decay, background L2→L3 consolidation |
 
 ---

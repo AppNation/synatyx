@@ -112,10 +112,15 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     # Expose the server to plain REST routes (e.g. /capture) via app state.
     _app.state.synatyx = synatyx
 
+    # Background compaction of idle session traces (implicit capture)
+    import asyncio
+    tracking_task = asyncio.create_task(synatyx.run_tracking_loop())
+
     logger.info("Synatyx MCP HTTP server ready on %s:%d", _host, _port)
 
     yield
 
+    tracking_task.cancel()
     await qdrant.close()
     await redis.close()
     await postgres.close()
