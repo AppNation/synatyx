@@ -7,11 +7,14 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from src.config import settings
+from src.core.alternatives import AlternativesService
+from src.core.brief import BriefService
 from src.core.budget import BudgetManager
 from src.core.ingest import IngestService
 from src.core.project import ProjectManager
 from src.core.relation import RelationService
-from src.core.retrieve import RetrieveService
+from src.core.retrieve import RetrieveService, empty_retrieve_diagnostics
 from src.core.score import score_items
 from src.core.skill import SkillService
 from src.core.store import StoreService
@@ -60,6 +63,21 @@ class SynatyxMCPServer:
         storage, _, _, _, _ = await self._get_services(user_id)
         l4_storage = await self._project_manager.get_l4_storage()
         return RelationService(self._postgres, storage, l4_storage)
+
+    async def _get_alternatives_service(self, user_id: str) -> AlternativesService:
+        storage, _, _, _, _ = await self._get_services(user_id)
+        l4_storage = await self._project_manager.get_l4_storage()
+        relations = RelationService(self._postgres, storage, l4_storage)
+        return AlternativesService(storage, l4_storage, self._postgres, relations)
+
+    async def _detect_alternatives_safe(self, user_id: str, item_id: str) -> dict[str, Any]:
+        """Run same-purpose detection after a store; never let it break the store."""
+        try:
+            alternatives = await self._get_alternatives_service(user_id)
+            return await alternatives.detect_for_item(user_id, item_id)
+        except Exception:
+            logger.exception("Alternative detection failed for item %s", item_id)
+            return {"auto_linked": [], "suggestions": []}
 
     async def _get_l4_services(self) -> tuple[QdrantStorage, StoreService, RetrieveService]:
         """Return services backed by the shared ctx_users collection (L4 only)."""
@@ -149,7 +167,25 @@ class SynatyxMCPServer:
             if suggestion else {}
         )
 
-        if name == "context_retrieve":
+        if name == "context_brief":
+            l4_storage = await self._project_manager.get_l4_storage()
+            brief_svc = BriefService(storage, l4_storage, self._postgres)
+            slug = await self._project_manager.get_project(user_id)
+            brief_result = await brief_svc.brief(
+                user_id=user_id,
+                project=args.get("project"),
+                session_id=args.get("session_id"),
+                max_tokens=args.get("max_tokens", 2000),
+                recent_days=args.get("recent_days", 7),
+            )
+            return {
+                "project": slug,
+                "collection": storage.collection_name,
+                **brief_result,
+                **_warn,
+            }
+
+        elif name == "context_retrieve":
             requested = [MemoryLayer(l) for l in args.get("memory_layers", [])] or list(MemoryLayer)
             top_k = args.get("top_k", 10)
 
@@ -201,12 +237,38 @@ class SynatyxMCPServer:
                 dumped_items.extend(expanded)
                 total_tokens += sum(len(e.get("content", "")) // 4 for e in expanded)
 
-            return {
+            retrieve_result: dict[str, Any] = {
                 "context_items": dumped_items,
                 "total_tokens": total_tokens,
                 "suggested_budget": suggested_budget,
                 **_warn,
             }
+
+            # Empty results are ambiguous — attach diagnostics so the agent can
+            # tell "nothing stored" from "filters/layers missed". Never let the
+            # extra counting break the retrieve itself.
+            if not final_items:
+                try:
+                    by_layer: dict[str, int] = {}
+                    for _layer in (MemoryLayer.L2, MemoryLayer.L3):
+                        by_layer[_layer.value] = await storage.count_items(
+                            user_id=user_id, memory_layer=_layer
+                        )
+                    l4_storage = await self._project_manager.get_l4_storage()
+                    by_layer[MemoryLayer.L4.value] = await l4_storage.count_items(
+                        user_id=user_id, memory_layer=MemoryLayer.L4
+                    )
+                    retrieve_result["diagnostics"] = empty_retrieve_diagnostics(
+                        total_for_user=sum(by_layer.values()),
+                        items_by_layer=by_layer,
+                        requested_layers=requested,
+                        session_id=args.get("session_id"),
+                        project=args.get("project"),
+                    )
+                except Exception:
+                    logger.exception("Retrieve diagnostics failed (non-critical)")
+
+            return retrieve_result
 
         elif name == "context_store":
             # Batch mode: store several items in one call
@@ -222,6 +284,15 @@ class SynatyxMCPServer:
                     batch = await _store.store_batch(
                         [entry], user_id=user_id, session_id=args.get("session_id")
                     )
+                    # Same-purpose detection (L1 lives in Redis — no embedding to compare)
+                    if settings.relation.detect_enabled and entry_layer != MemoryLayer.L1:
+                        for r in batch:
+                            if "item_id" in r:
+                                detection = await self._detect_alternatives_safe(
+                                    user_id, r["item_id"]
+                                )
+                                if detection["auto_linked"] or detection["suggestions"]:
+                                    r.update(detection)
                     results.extend(batch)
                 stored = sum(1 for r in results if "error" not in r)
                 return {
@@ -247,8 +318,17 @@ class SynatyxMCPServer:
                 session_id=args.get("session_id"),
                 metadata=args.get("metadata"),
                 confidence=args.get("confidence", 1.0),
+                origin=args.get("origin"),
             )
-            return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn}
+            single_result: dict[str, Any] = {
+                "item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, **_warn
+            }
+            # Same-purpose detection (L1 lives in Redis — no embedding to compare)
+            if settings.relation.detect_enabled and layer != MemoryLayer.L1 and embedded:
+                detection = await self._detect_alternatives_safe(user_id, item_ids[0])
+                if detection["auto_linked"] or detection["suggestions"]:
+                    single_result.update(detection)
+            return single_result
 
         elif name == "context_summarize":
             summarize = SummarizeService(self._redis, self._postgres, store=store)
@@ -384,6 +464,15 @@ class SynatyxMCPServer:
             if fetched is None:
                 return {"error": f"Item {args['item_id']!r} not found"}
             return {"item": fetched.model_dump()}
+
+        elif name == "context_alternatives":
+            alternatives_svc = await self._get_alternatives_service(user_id)
+            groups = await alternatives_svc.alternatives(
+                user_id=user_id,
+                query=args["query"],
+                top_k=args.get("top_k", 5),
+            )
+            return {"query": args["query"], "groups": groups, "count": len(groups), **_warn}
 
         elif name == "context_visualize":
             from src.core.visualize import render_mermaid

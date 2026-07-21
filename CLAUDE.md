@@ -4,16 +4,18 @@
 
 At the start of every new conversation, before doing anything else:
 
-1. Call `context_get_project` to check the active project (user_id: derive from `whoami`)
-2. If no project is set, call `context_set_project` with the workspace folder name
-3. Call `context_retrieve` with the user's first message as the query (top_k: 5, session_id: project slug)
-4. Call `context_task_list` to surface any pending work
-5. Inject retrieved context into your reasoning before responding
+1. Call `context_brief` (user_id: derive from `whoami`, session_id: project slug) — one call returning identity, last session, project knowledge, recent changes, failed attempts, open tasks, and stats. It also reports the active project.
+2. If the brief shows no/wrong project, call `context_set_project` with the workspace folder name
+3. If the user's first message asks about something specific, add one focused `context_retrieve` with that as the query (top_k: 5)
+4. Inject the briefing into your reasoning before responding
+
+If a `context_retrieve` ever comes back empty, read its `diagnostics` block — it distinguishes "nothing stored" from "filters/layers missed" and tells you what to do next.
 
 ## Synatyx Memory — During the Session
 
 - **MANDATORY: Always call `context_retrieve` BEFORE reading any file, searching code, or answering any question about the project** — if memory has sufficient context, answer directly without touching the filesystem. Only fall through to file reads or code searches if memory explicitly lacks the answer or user mentioned read directly from files.
-- Call `context_store` silently whenever a decision, fact, or convention is established
+- Call `context_store` silently whenever a decision, fact, or convention is established — pass `origin` ("user-stated" when the user said it, "agent-inferred" for your own conclusions, "web-search" for facts found online)
+- After a failed approach, store an attempt record: L2 with metadata `{type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these next session
 - Never ask the user whether to store something — just do it
 - Use `session_id` as the project slug for all project-scoped operations
 - Store user-level preferences as L4 (they go to `ctx_users` automatically)

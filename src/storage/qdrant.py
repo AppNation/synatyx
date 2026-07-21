@@ -222,6 +222,19 @@ class QdrantStorage:
         r = records[0]
         return self._payload_to_item(r.id, r.payload or {})
 
+    async def get_vector(self, item_id: str) -> list[float] | None:
+        """Fetch a point's stored embedding by ID (None if the point is missing)."""
+        records = await self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=[str(uuid.UUID(item_id))],
+            with_payload=False,
+            with_vectors=True,
+        )
+        if not records or records[0].vector is None:
+            return None
+        vector = records[0].vector
+        return list(vector) if isinstance(vector, list) else None
+
     async def delete(self, item_id: str) -> None:
         """Delete a single point by ID."""
         await self._client.delete(
@@ -363,6 +376,42 @@ class QdrantStorage:
                 continue
             items.append(self._payload_to_item(r.id, p))
         return items
+
+    async def count_items(
+        self,
+        user_id: str,
+        memory_layer: MemoryLayer | None = None,
+        project: str | None = None,
+        session_id: str | None = None,
+        include_deprecated: bool = False,
+    ) -> int:
+        """Exact count of a user's items — used for brief stats and retrieval diagnostics."""
+        conditions: list[Any] = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+        if not include_deprecated:
+            conditions.append(
+                FieldCondition(key="is_deprecated", match=MatchValue(value=False))
+            )
+        if memory_layer:
+            conditions.append(
+                FieldCondition(key="memory_layer", match=MatchValue(value=memory_layer.value))
+            )
+        if project:
+            conditions.append(
+                FieldCondition(key="project", match=MatchValue(value=project))
+            )
+        if session_id:
+            conditions.append(
+                FieldCondition(key="session_id", match=MatchValue(value=session_id))
+            )
+
+        result = await self._client.count(
+            collection_name=self._collection_name,
+            count_filter=Filter(must=conditions),
+            exact=True,
+        )
+        return result.count
 
     async def ping(self) -> bool:
         try:

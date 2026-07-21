@@ -1,5 +1,37 @@
 [
   {
+    "name": "context_brief",
+    "description": "One-call session-start digest — call this FIRST in every new conversation instead of separate get_project/retrieve/task_list calls. Returns a token-budgeted briefing: identity (L4 user preferences), last_session (recent L2 summaries), project_knowledge (pinned checkpoints + top L3 facts), recent_changes (items stored in the last N days), recent_attempts (tried-and-failed records so you don't repeat dead ends), open_tasks, and stats (item counts by layer).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Project slug — scopes open_tasks and L1 session context"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project name filter for Qdrant-level isolation (optional)"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token budget for the whole briefing (default: 2000)"
+        },
+        "recent_days": {
+          "type": "integer",
+          "description": "Window for the recent_changes section in days (default: 7)"
+        }
+      },
+      "required": [
+        "user_id"
+      ]
+    }
+  },
+  {
     "name": "context_retrieve",
     "description": "Retrieve relevant context items for the current query from all memory layers.",
     "parameters": {
@@ -51,7 +83,7 @@
   },
   {
     "name": "context_store",
-    "description": "Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N).",
+    "description": "Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N). After storing (L2-L4), same-purpose detection runs automatically: near-identical memories are auto-linked with alternative_to edges (auto_linked in the response); probable matches are returned as suggestions to confirm with context_relate (suggestions in the response). To record a failed approach (so future sessions don't repeat it), store an L2 item with metadata {type: 'attempt', goal, approach, outcome: 'failed', why} — context_brief surfaces these in its recent_attempts section.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -61,7 +93,7 @@
         },
         "items": {
           "type": "array",
-          "description": "Batch mode: list of items to store in one call. Each item: {content, memory_layer, importance?, metadata?, confidence?, session_id?}. When provided, top-level content/memory_layer are ignored.",
+          "description": "Batch mode: list of items to store in one call. Each item: {content, memory_layer, importance?, metadata?, confidence?, session_id?, origin?}. When provided, top-level content/memory_layer are ignored.",
           "items": {
             "type": "object",
             "properties": {
@@ -88,6 +120,16 @@
               },
               "session_id": {
                 "type": "string"
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "user-stated",
+                  "agent-inferred",
+                  "ingested-from-file",
+                  "ingested-from-web",
+                  "web-search"
+                ]
               }
             },
             "required": [
@@ -124,6 +166,17 @@
         "confidence": {
           "type": "number",
           "description": "Confidence score 0.0-1.0 (default: 1.0)"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "user-stated",
+            "agent-inferred",
+            "ingested-from-file",
+            "ingested-from-web",
+            "web-search"
+          ],
+          "description": "Provenance of this fact: 'user-stated' when the user said it directly, 'agent-inferred' for your own conclusions (default), 'web-search' for facts found online. Ingested content is tagged automatically. Stored in metadata.origin and returned on retrieval so trust level is always visible."
         }
       },
       "required": [
@@ -419,6 +472,31 @@
       },
       "required": [
         "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_alternatives",
+    "description": "Answer 'what can I use for X?' — semantic search for a purpose (e.g. 'approve button'), returning each matching memory grouped with its alternatives (items linked via alternative_to or used_for edges). Alternatives are detected automatically at store time: near-identical purposes are auto-linked, probable matches are returned as suggested_relations in the store response.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "query": {
+          "type": "string",
+          "description": "The purpose to search for, e.g. 'approve button component'"
+        },
+        "top_k": {
+          "type": "integer",
+          "description": "Max groups to return (default: 5)"
+        }
+      },
+      "required": [
+        "user_id",
+        "query"
       ]
     }
   },

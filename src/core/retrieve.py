@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,50 @@ class RetrieveResult:
     context_items: list[ScoredContextItem]
     total_tokens: int
     suggested_budget: dict[str, int]
+
+
+def empty_retrieve_diagnostics(
+    total_for_user: int,
+    items_by_layer: dict[str, int],
+    requested_layers: list[MemoryLayer],
+    session_id: str | None = None,
+    project: str | None = None,
+) -> dict[str, Any]:
+    """Explain WHY a retrieve came back empty.
+
+    An empty result is ambiguous to the caller: "nothing stored" and "query
+    or filters missed" demand opposite next actions. This distinguishes them
+    using collection counts (L1 lives in Redis and is not counted here).
+    """
+    filters = [
+        name for name, value in (("session_id", session_id), ("project", project)) if value
+    ]
+    layer_names = ", ".join(l.value for l in requested_layers) or "none"
+
+    if total_for_user == 0:
+        hint = (
+            "This user has no memories in the active project collection yet — "
+            "nothing can match any query. Store facts with context_store first."
+        )
+    elif filters:
+        hint = (
+            f"{total_for_user} memories exist for this user, but none matched the "
+            f"{' + '.join(filters)} filter(s). Retry without the filter(s) or check the values."
+        )
+    else:
+        hint = (
+            f"{total_for_user} memories exist for this user, but none are in the "
+            f"requested layers ({layer_names}). Retry with other memory_layers."
+        )
+
+    return {
+        "matched": 0,
+        "total_items_for_user": total_for_user,
+        "items_by_layer": items_by_layer,
+        "filters_applied": filters,
+        "requested_layers": [l.value for l in requested_layers],
+        "hint": hint,
+    }
 
 
 class RetrieveService:
