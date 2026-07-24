@@ -52,30 +52,36 @@ class SynatyxMCPServer:
         self._tracker = SessionTracker(redis, settings.tracking)
         self._register_handlers()
 
-    async def _get_skill_service(self, user_id: str) -> SkillService:
+    async def _get_skill_service(self, user_id: str, project: str | None = None) -> SkillService:
         """Return a SkillService backed by the active project's Qdrant collection."""
-        storage, _, _, _, _ = await self._get_services(user_id)
+        storage, _, _, _, _ = await self._get_services(user_id, project)
         key = storage.collection_name
         if key not in self._skill_svc_cache:
             self._skill_svc_cache[key] = SkillService(storage, self._postgres)
         return self._skill_svc_cache[key]
 
-    async def _get_relation_service(self, user_id: str) -> RelationService:
+    async def _get_relation_service(
+        self, user_id: str, project: str | None = None
+    ) -> RelationService:
         """Return a RelationService spanning the active project collection and ctx_users."""
-        storage, _, _, _, _ = await self._get_services(user_id)
+        storage, _, _, _, _ = await self._get_services(user_id, project)
         l4_storage = await self._project_manager.get_l4_storage()
         return RelationService(self._postgres, storage, l4_storage)
 
-    async def _get_alternatives_service(self, user_id: str) -> AlternativesService:
-        storage, _, _, _, _ = await self._get_services(user_id)
+    async def _get_alternatives_service(
+        self, user_id: str, project: str | None = None
+    ) -> AlternativesService:
+        storage, _, _, _, _ = await self._get_services(user_id, project)
         l4_storage = await self._project_manager.get_l4_storage()
         relations = RelationService(self._postgres, storage, l4_storage)
         return AlternativesService(storage, l4_storage, self._postgres, relations)
 
-    async def _detect_alternatives_safe(self, user_id: str, item_id: str) -> dict[str, Any]:
+    async def _detect_alternatives_safe(
+        self, user_id: str, item_id: str, project: str | None = None
+    ) -> dict[str, Any]:
         """Run same-purpose detection after a store; never let it break the store."""
         try:
-            alternatives = await self._get_alternatives_service(user_id)
+            alternatives = await self._get_alternatives_service(user_id, project)
             return await alternatives.detect_for_item(user_id, item_id)
         except Exception:
             logger.exception("Alternative detection failed for item %s", item_id)
@@ -94,15 +100,24 @@ class SynatyxMCPServer:
         return storage, store, retrieve
 
     async def _get_services(
-        self, user_id: str
+        self, user_id: str, project: str | None = None
     ) -> tuple[QdrantStorage, RetrieveService, StoreService, IngestService, str | None]:
         """Return project-scoped services for the given user.
+
+        When `project` is given, it wins over the user's active-project pointer
+        (which is a single per-user value shared by ALL concurrent sessions —
+        routing by the explicit argument keeps parallel sessions from storing
+        into each other's collections).
 
         Returns:
             (storage, retrieve, store, ingest, cwd_suggestion)
             cwd_suggestion is non-None only when no project has been set yet.
         """
-        storage, suggestion = await self._project_manager.get_storage(user_id)
+        if project:
+            storage = await self._project_manager.get_storage_for(project)
+            suggestion = None
+        else:
+            storage, suggestion = await self._project_manager.get_storage(user_id)
         key = storage.collection_name
         if key not in self._svc_cache:
             store_svc = StoreService(storage, self._redis, self._postgres)
@@ -128,7 +143,7 @@ class SynatyxMCPServer:
         chunking, provenance, alternative detection are all preserved."""
         from src.models.memory_layer import MemoryLayer as ML
 
-        _, _, store, _, _ = await self._get_services(user_id)
+        _, _, store, _, _ = await self._get_services(user_id, project)
         layer = ML(memory_layer)
         if layer == ML.L4:
             store = (await self._get_l4_services())[1]
@@ -200,8 +215,22 @@ class SynatyxMCPServer:
                 ),
             }
 
-        # ── All other tools — route to the active project's storage ─────────
-        storage, retrieve, store, ingest, suggestion = await self._get_services(user_id)
+        # ── All other tools ──────────────────────────────────────────────────
+        # Normalize the project argument to its canonical slug once — points
+        # carry the slug in their payload, so filters must compare slugs, and
+        # routing/collection names are slug-based too.
+        if isinstance(args.get("project"), str) and args["project"].strip():
+            from src.core.project import slugify
+            args["project"] = slugify(args["project"])
+        else:
+            args.pop("project", None)
+
+        # An explicit project argument wins over the active-project pointer:
+        # the pointer is one per-user value shared by every concurrent session,
+        # so routing by it races when two sessions work in different projects.
+        storage, retrieve, store, ingest, suggestion = await self._get_services(
+            user_id, args.get("project")
+        )
         _warn: dict[str, Any] = (
             {"_project_warning": f"No project set. Detected workspace '{suggestion}'. Call context_set_project to confirm."}
             if suggestion else {}
@@ -269,7 +298,7 @@ class SynatyxMCPServer:
 
             # Optional 1-hop relation expansion — pull in linked memories
             if args.get("expand_relations") and final_items:
-                relations = await self._get_relation_service(user_id)
+                relations = await self._get_relation_service(user_id, args.get("project"))
                 expanded = await relations.expand(
                     user_id=user_id,
                     item_ids=[i.id for i in final_items],
@@ -330,7 +359,7 @@ class SynatyxMCPServer:
                         for r in batch:
                             if "item_id" in r:
                                 detection = await self._detect_alternatives_safe(
-                                    user_id, r["item_id"]
+                                    user_id, r["item_id"], args.get("project")
                                 )
                                 if detection["auto_linked"] or detection["suggestions"]:
                                     r.update(detection)
@@ -366,7 +395,9 @@ class SynatyxMCPServer:
             }
             # Same-purpose detection (L1 lives in Redis — no embedding to compare)
             if settings.relation.detect_enabled and layer != MemoryLayer.L1 and embedded:
-                detection = await self._detect_alternatives_safe(user_id, item_ids[0])
+                detection = await self._detect_alternatives_safe(
+                    user_id, item_ids[0], args.get("project")
+                )
                 if detection["auto_linked"] or detection["suggestions"]:
                     single_result.update(detection)
             return single_result
@@ -435,7 +466,7 @@ class SynatyxMCPServer:
             )
             result: dict[str, Any] = {"deprecated": True, "item_id": item_id}
             if superseded_by:
-                relations = await self._get_relation_service(user_id)
+                relations = await self._get_relation_service(user_id, args.get("project"))
                 edge, _created = await relations.relate(
                     user_id=user_id,
                     source_id=superseded_by,
@@ -447,7 +478,7 @@ class SynatyxMCPServer:
             return result
 
         elif name == "context_relate":
-            relations = await self._get_relation_service(user_id)
+            relations = await self._get_relation_service(user_id, args.get("project"))
             edge, created = await relations.relate(
                 user_id=user_id,
                 source_id=args["source_id"],
@@ -465,7 +496,7 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_unrelate":
-            relations = await self._get_relation_service(user_id)
+            relations = await self._get_relation_service(user_id, args.get("project"))
             deleted = await relations.unrelate(
                 user_id=user_id,
                 relation_id=args.get("relation_id"),
@@ -476,7 +507,7 @@ class SynatyxMCPServer:
             return {"deleted": deleted}
 
         elif name == "context_related":
-            relations = await self._get_relation_service(user_id)
+            relations = await self._get_relation_service(user_id, args.get("project"))
             edges, neighbors = await relations.related(
                 user_id=user_id,
                 item_id=args["item_id"],
@@ -500,14 +531,14 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_get":
-            relations = await self._get_relation_service(user_id)
+            relations = await self._get_relation_service(user_id, args.get("project"))
             fetched = await relations.get_item(args["item_id"], user_id)
             if fetched is None:
                 return {"error": f"Item {args['item_id']!r} not found"}
             return {"item": fetched.model_dump()}
 
         elif name == "context_alternatives":
-            alternatives_svc = await self._get_alternatives_service(user_id)
+            alternatives_svc = await self._get_alternatives_service(user_id, args.get("project"))
             groups = await alternatives_svc.alternatives(
                 user_id=user_id,
                 query=args["query"],
@@ -531,7 +562,7 @@ class SynatyxMCPServer:
                 project=args.get("project"),
                 limit=args.get("limit", 50),
             )
-            relations = await self._get_relation_service(user_id)
+            relations = await self._get_relation_service(user_id, args.get("project"))
             edges = await self._postgres.relation_list(
                 user_id=user_id,
                 item_ids=[i.id for i in graph_items],
@@ -652,7 +683,7 @@ class SynatyxMCPServer:
             return {"task_id": updated.id, "title": updated.title, "status": updated.status, "updated_at": updated.updated_at.isoformat()}
 
         elif name == "context_skill_store":
-            svc = await self._get_skill_service(user_id)
+            svc = await self._get_skill_service(user_id, args.get("project"))
             skill = await svc.store(
                 name=args["name"],
                 description=args["description"],
@@ -670,7 +701,7 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_skill_find":
-            svc = await self._get_skill_service(user_id)
+            svc = await self._get_skill_service(user_id, args.get("project"))
             results = await svc.find(
                 query=args["query"],
                 user_id=user_id,
@@ -680,7 +711,7 @@ class SynatyxMCPServer:
             return {"skills": results, "count": len(results)}
 
         elif name == "context_skill_get":
-            svc = await self._get_skill_service(user_id)
+            svc = await self._get_skill_service(user_id, args.get("project"))
             skill = await svc.get(
                 name=args["name"],
                 user_id=user_id,
@@ -698,7 +729,7 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_skill_list":
-            svc = await self._get_skill_service(user_id)
+            svc = await self._get_skill_service(user_id, args.get("project"))
             skills = await svc.list_skills(
                 user_id=user_id,
                 project=args.get("project"),
@@ -713,7 +744,7 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_skill_delete":
-            svc = await self._get_skill_service(user_id)
+            svc = await self._get_skill_service(user_id, args.get("project"))
             deleted = await svc.delete(name=args["name"], user_id=user_id)
             if not deleted:
                 return {"error": f"Skill {args['name']!r} not found"}

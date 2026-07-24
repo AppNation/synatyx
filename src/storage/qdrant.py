@@ -44,6 +44,20 @@ class QdrantStorage:
     def collection_name(self) -> str:
         return self._collection_name
 
+    @property
+    def project_slug(self) -> str | None:
+        """Project slug implied by the collection name (ctx_<slug>).
+
+        None for the shared/default collections (ctx_users, ctx_default) where
+        a project scope is meaningless — their points must not match any
+        project filter.
+        """
+        prefix = "ctx_"
+        if not self._collection_name.startswith(prefix):
+            return None
+        slug = self._collection_name[len(prefix):]
+        return None if slug in ("users", "default") else slug
+
     def scoped(self, collection_name: str) -> QdrantStorage:
         """Return a view of this storage bound to another collection.
 
@@ -79,7 +93,10 @@ class QdrantStorage:
             payload={
                 "user_id": item.user_id,
                 "session_id": item.session_id,
-                "project": item.metadata.get("project"),
+                # Every point carries its project scope so project filters can
+                # match; the collection itself is per-project, so the slug is
+                # authoritative when the caller didn't set metadata.project.
+                "project": item.metadata.get("project") or self.project_slug,
                 "content": item.content,
                 "memory_layer": item.memory_layer.value,
                 "importance": item.importance,
@@ -108,7 +125,7 @@ class QdrantStorage:
             payload={
                 "user_id": user_id,
                 "session_id": None,
-                "project": project,
+                "project": project or self.project_slug,
                 "content": name,
                 "memory_layer": MemoryLayer.L3.value,
                 "importance": 0.8,

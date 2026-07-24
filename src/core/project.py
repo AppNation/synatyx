@@ -77,6 +77,16 @@ class ProjectManager:
         storage = await self._ensure_storage(slug)
         return storage, None
 
+    async def get_storage_for(self, project_name: str) -> QdrantStorage:
+        """Return the QdrantStorage for an explicitly named project.
+
+        Does NOT touch the user's active-project pointer. This is the routing
+        path for calls that carry an explicit `project` argument — concurrent
+        sessions in different workspaces would otherwise race on the single
+        per-user pointer and store/read in each other's collections.
+        """
+        return await self._ensure_storage(slugify(project_name))
+
     async def get_l4_storage(self) -> QdrantStorage:
         """Return the single shared QdrantStorage for L4 (user-global preferences).
 
