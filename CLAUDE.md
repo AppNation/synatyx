@@ -19,6 +19,7 @@ If a `context_retrieve` ever comes back empty, read its `diagnostics` block — 
 - After a failed approach, store an attempt record: L2 with metadata `{type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these next session
 - Never ask the user whether to store something — just do it
 - Use `session_id` as the project slug for all project-scoped operations
+- **Always pass `project` (the project slug) explicitly on store/get/retrieve/list/deprecate calls** — it routes the call directly to that project's collection, overriding the active-project pointer. The pointer is one shared value per user, so concurrent sessions in different workspaces overwrite each other's routing; the explicit `project` argument is immune to that race
 - Store user-level preferences as L4 (they go to `ctx_users` automatically)
 - At the end of a long session, call `context_summarize` to compress into L2
 
