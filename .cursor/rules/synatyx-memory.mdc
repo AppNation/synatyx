@@ -127,6 +127,10 @@ Every store should carry its provenance so future sessions know how much to trus
 - When a fact refers to specific files, pass `metadata.files: ["src/auth.ts", ...]` — Synatyx hashes them at store time, and retrieval flags the memory `possibly_stale` (with `stale_files`) when they change. Treat a flagged memory as a hypothesis: verify against the file, re-store the corrected fact, deprecate the old one.
 - Tag `metadata.fact_type` so GC decays the memory at the right speed: `file-location` (rots fast), `config`, `architecture`, `preference` (barely rots).
 
+### Project routing — always pass `project` explicitly
+
+Always pass the `project` slug on store/get/retrieve/list calls. It routes the call directly to that project's collection, overriding the active-project pointer — which is a single shared value per user, so concurrent sessions in different workspaces overwrite each other's routing. The explicit `project` argument is immune to that race.
+
 ### Attempt records — store what failed
 
 After an approach fails (a library that didn't work, a fix that broke something, a dead-end design), store it so no future session repeats it:

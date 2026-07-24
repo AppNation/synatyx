@@ -177,6 +177,10 @@
             "web-search"
           ],
           "description": "Provenance of this fact: 'user-stated' when the user said it directly, 'agent-inferred' for your own conclusions (default), 'web-search' for facts found online. Ingested content is tagged automatically. Stored in metadata.origin and returned on retrieval so trust level is always visible."
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -292,6 +296,10 @@
         "superseded_by": {
           "type": "string",
           "description": "ID of the newer item that replaces this one — records a 'supersedes' relation (new item → deprecated item) so replacement history is traceable (optional)"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -363,6 +371,10 @@
         "user_id": {
           "type": "string",
           "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -396,6 +408,10 @@
             "both"
           ],
           "description": "Edge direction relative to item_id (default: both)"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -417,6 +433,10 @@
         "user_id": {
           "type": "string",
           "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -492,6 +512,10 @@
         "top_k": {
           "type": "integer",
           "description": "Max groups to return (default: 5)"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -898,6 +922,10 @@
         "user_id": {
           "type": "string",
           "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
@@ -914,6 +942,10 @@
         "user_id": {
           "type": "string",
           "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional)"
         }
       },
       "required": [
