@@ -311,9 +311,33 @@
   </div><!-- /view-memories -->
 
   <div id="view-indexes" style="display:none">
-    <div class="card">
+    <div class="card" style="margin-bottom:16px">
       <h2>Code indexes — one collection per project (ctx_&lt;slug&gt;__index)</h2>
       <div id="indexes"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>Index map — 3D · files by directory · drag to rotate</h2>
+      <div class="controls">
+        <label>Project
+          <select id="sel-index"></select>
+        </label>
+        <span class="sub" id="index-graph-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div class="legend" id="index-legend"></div>
+      <div id="index-graph"></div>
+    </div>
+
+    <div class="card">
+      <h2>Chunks</h2>
+      <div class="controls">
+        <label>Filter
+          <input id="chunk-filter" type="text" placeholder="path or symbol…"
+                 style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;width:240px">
+        </label>
+        <span class="sub" id="chunk-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div id="index-chunks"></div>
     </div>
   </div><!-- /view-indexes -->
 </div>
@@ -549,7 +573,6 @@ async function loadUsers() {
    nodes first, then edges, feeding the shared tooltip. Deprecated nodes are
    dashed outlines, pinned nodes wear a bright ring. */
 const GOLDEN_ANGLE = 2.399963;
-let graphAnim = null; /* cancels the previous render loop on re-render */
 
 function layout3d(nodes, edges) {
   let seed = 42; /* deterministic: same data → same cloud */
@@ -588,18 +611,22 @@ function nodeTip(n) {
     `<div class='tt-row'>${esc(n.user_id || "")}${flags ? " · " + flags : ""}</div>`;
 }
 
-function renderGraph(data) {
-  if (graphAnim) { cancelAnimationFrame(graphAnim); graphAnim = null; }
+/* Shared 3D point-cloud renderer — memory graph and code-index graph both
+   use it; opts carries the per-graph identity (colors, tooltips, targets). */
+function render3D(data, opts) {
+  const box = opts.box;
+  if (box._anim) { cancelAnimationFrame(box._anim); box._anim = null; }
   let nodes = data.nodes.map((n) => ({ ...n }));
   let edges = data.edges;
-  if ($("chk-connected").checked) {
+  if (opts.onlyConnected && opts.onlyConnected()) {
     const linked = new Set();
     edges.forEach((e) => { linked.add(e.source); linked.add(e.target); });
     nodes = nodes.filter((n) => linked.has(n.id));
   }
-  $("graph-stats").textContent = `${nodes.length} nodes · ${edges.length} relations`;
+  if (opts.statsEl) opts.statsEl.textContent =
+    `${nodes.length} nodes · ${edges.length} ${opts.edgeWord || "relations"}`;
   if (!nodes.length) {
-    $("graph").innerHTML = `<div class="empty">Nothing to draw${$("chk-connected").checked ? " — no relation edges in this collection yet" : ""}.</div>`;
+    box.innerHTML = `<div class="empty">Nothing to draw.</div>`;
     return;
   }
 
@@ -609,7 +636,6 @@ function renderGraph(data) {
     .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target), type: e.type }))
     .filter((l) => l.a && l.b);
 
-  const box = $("graph");
   box.innerHTML = "";
   const canvas = document.createElement("canvas");
   box.appendChild(canvas);
@@ -666,7 +692,7 @@ function renderGraph(data) {
       const n = nodes[i], q = proj[i];
       const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f;
       const depth = Math.max(0.25, Math.min(1, q.f * q.f));
-      const c = LAYER_HEX[n.memory_layer] || "#8b90a6";
+      const c = opts.color(n);
       if (n.is_deprecated) {
         ctx.setLineDash([3, 2]);
         ctx.strokeStyle = `rgba(139,144,166,${(0.7 * depth).toFixed(2)})`;
@@ -697,9 +723,11 @@ function renderGraph(data) {
   }
 
   function tick() {
-    if (!dragging && !hovering && !reduced) yaw += 0.0032;
-    draw();
-    graphAnim = requestAnimationFrame(tick);
+    if (box.offsetParent !== null) {  /* skip drawing while the tab is hidden */
+      if (!dragging && !hovering && !reduced) yaw += 0.0032;
+      draw();
+    }
+    box._anim = requestAnimationFrame(tick);
   }
 
   const toLocal = (evt) => {
@@ -718,6 +746,21 @@ function renderGraph(data) {
     canvas.classList.add("dragging");
     hideTip();
     evt.preventDefault();
+  });
+  canvas.addEventListener("pointerup", (evt) => {
+    /* a press that barely moved is a click — surface the node if asked */
+    if (opts.onClick && dragging &&
+        Math.hypot(evt.clientX - dragging.x, evt.clientY - dragging.y) < 5) {
+      const p = toLocal(evt);
+      let hit = null, hitD = Infinity;
+      nodes.forEach((n, i) => {
+        const q = proj[i];
+        if (!q) return;
+        const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
+        if (Math.hypot(p.x - q.x, p.y - q.y) < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
+      });
+      if (hit) opts.onClick(hit);
+    }
   });
   canvas.addEventListener("pointermove", (evt) => {
     if (dragging) {
@@ -738,7 +781,7 @@ function renderGraph(data) {
     });
     if (hit) {
       hovering = true;
-      showTip(nodeTip(hit), evt.clientX, evt.clientY);
+      showTip(opts.tip(hit), evt.clientX, evt.clientY);
       return;
     }
     const edge = links.find((l) => l.px && distToSeg(p, l.px, l.py) < 6);
@@ -760,6 +803,17 @@ function renderGraph(data) {
   if (reduced) draw(); else tick();
 }
 
+function renderGraph(data) {
+  render3D(data, {
+    box: $("graph"),
+    statsEl: $("graph-stats"),
+    edgeWord: "relations",
+    onlyConnected: () => $("chk-connected").checked,
+    color: (n) => LAYER_HEX[n.memory_layer] || "#8b90a6",
+    tip: nodeTip,
+  });
+}
+
 async function loadGraph() {
   const collection = $("sel-graph-collection").value;
   if (!collection) { $("graph").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
@@ -770,6 +824,96 @@ async function loadGraph() {
   } catch (e) {
     if (e.message !== "unauthorized") $("graph").innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
   }
+}
+
+/* ── code-index graph + chunks ── */
+const LANG_COLORS = ["#67e8f9", "#34d399", "#a78bfa", "#fbbf24", "#fb7185", "#f472b6", "#94a3b8"];
+let langColorMap = {};
+
+function codeNodeColor(n) {
+  if (n.kind === "project") return "#f1f2fa";
+  if (n.kind === "dir") return "#8b90a6";
+  return langColorMap[n.language] || "#8b90a6";
+}
+
+function codeNodeTip(n) {
+  if (n.kind === "file") {
+    return `<div class='tt-title'>${esc(n.label)}</div>` +
+      `<div class='tt-row'>${esc(n.language)} · ${n.chunks} chunk${n.chunks === 1 ? "" : "s"}</div>` +
+      `<div class='tt-row dim'>click to inspect chunks</div>`;
+  }
+  return `<div class='tt-title'>${esc(n.label)}</div><div class='tt-row'>${esc(n.kind)}</div>`;
+}
+
+async function loadIndexGraph() {
+  const collection = $("sel-index").value;
+  const box = $("index-graph");
+  if (!collection) { box.innerHTML = `<div class="empty">No code indexes yet.</div>`; return; }
+  let data;
+  try {
+    data = await api("/dashboard/api/index_graph?" + new URLSearchParams({ collection }));
+  } catch (e) {
+    if (e.message !== "unauthorized") box.innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
+    return;
+  }
+  /* stable language → color assignment, most common language first */
+  const counts = {};
+  data.nodes.forEach((n) => { if (n.kind === "file") counts[n.language] = (counts[n.language] || 0) + 1; });
+  langColorMap = {};
+  Object.keys(counts).sort((a, b) => counts[b] - counts[a])
+    .forEach((lang, i) => { langColorMap[lang] = LANG_COLORS[i % LANG_COLORS.length]; });
+  $("index-legend").innerHTML = Object.keys(langColorMap)
+    .map((lang) => `<span class="key"><span class="swatch" style="background:${langColorMap[lang]}"></span>${esc(lang)}</span>`)
+    .join("") +
+    `<span class="key"><span class="swatch" style="background:#8b90a6"></span>directory</span>`;
+  render3D(data, {
+    box,
+    statsEl: $("index-graph-stats"),
+    edgeWord: "links",
+    color: codeNodeColor,
+    tip: codeNodeTip,
+    onClick: (n) => {
+      if (n.kind !== "file") return;
+      $("chunk-filter").value = n.label;
+      loadIndexChunks();
+    },
+  });
+}
+
+async function loadIndexChunks() {
+  const collection = $("sel-index").value;
+  const el = $("index-chunks");
+  if (!collection) { el.innerHTML = ""; return; }
+  const params = new URLSearchParams({ collection, limit: "100" });
+  const q = $("chunk-filter").value.trim();
+  if (q) params.set("q", q);
+  let data;
+  try {
+    data = await api("/dashboard/api/index_chunks?" + params);
+  } catch (e) {
+    if (e.message !== "unauthorized") el.innerHTML = `<div class="empty">Failed to load chunks (${esc(e.message)}).</div>`;
+    return;
+  }
+  $("chunk-stats").textContent = data.count < data.total
+    ? `${data.count} of ${data.total} chunks` : `${data.total} chunks`;
+  if (!data.chunks.length) {
+    el.innerHTML = `<div class="empty">No chunks match.</div>`;
+    return;
+  }
+  el.innerHTML =
+    '<table><thead><tr><th>Path</th><th>Symbol</th><th>Kind</th>' +
+    '<th class="num">Lines</th><th>Preview</th></tr></thead><tbody>' +
+    data.chunks.map((c) => {
+      const lines = c.line_start ? `${c.line_start}–${c.line_end || "?"}` : "—";
+      const idx = c.chunk_total > 1 ? `<span class="badge">${c.chunk_index + 1}/${c.chunk_total}</span>` : "";
+      return `<tr>
+        <td class="mono" style="font-size:12px">${esc(c.path)}${idx}</td>
+        <td class="mono" style="font-size:12px">${esc(c.symbol || "—")}</td>
+        <td>${esc(c.kind || "—")}</td>
+        <td class="num">${lines}</td>
+        <td class="content-cell mono dim" style="font-size:11px">${esc(c.preview)}${c.preview.length >= 220 ? "…" : ""}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
 }
 
 /* ── tasks ── */
@@ -856,6 +1000,7 @@ async function boot() {
   }
   $("updated").textContent = "synced " + new Date().toLocaleTimeString();
   await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph(), loadIndexes()]);
+  await Promise.all([loadIndexGraph(), loadIndexChunks()]);
 }
 
 async function loadIndexes() {
@@ -867,6 +1012,13 @@ async function loadIndexes() {
     el.innerHTML = '<div class="empty">Could not load index stats.</div>';
     return;
   }
+  /* keep the project selector in sync (preserve the current choice) */
+  const sel = $("sel-index");
+  const prev = sel.value;
+  sel.innerHTML = data.indexes.map((ix) =>
+    `<option value="${esc(ix.collection)}">${esc(ix.project)} (${ix.files} files)</option>`).join("");
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+
   if (!data.indexes.length) {
     el.innerHTML = '<div class="empty">No code indexes yet — run <span class="mono">context_index</span>, ' +
       'push with <span class="mono">scripts/index_project.py</span>, or install the Synatyx Indexer extension.</div>';
@@ -920,6 +1072,15 @@ $("sel-graph-collection").addEventListener("change", () => {
 $("sel-layer").addEventListener("change", loadItems);
 $("sel-user").addEventListener("change", () => { selectedUser = $("sel-user").value; loadItems(); loadUsers(); });
 $("sel-graph-user").addEventListener("change", loadGraph);
+$("sel-index").addEventListener("change", () => {
+  $("chunk-filter").value = "";
+  loadIndexGraph(); loadIndexChunks();
+});
+let chunkFilterTimer = null;
+$("chunk-filter").addEventListener("input", () => {
+  clearTimeout(chunkFilterTimer);
+  chunkFilterTimer = setTimeout(loadIndexChunks, 300);
+});
 $("chk-deprecated").addEventListener("change", loadItems);
 $("chk-connected").addEventListener("change", loadGraph);
 $("sel-status").addEventListener("change", loadTasks);

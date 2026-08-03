@@ -21,6 +21,8 @@ from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
 from src.transports.mcp.dashboard import (
     api_graph,
+    api_index_chunks,
+    api_index_graph,
     api_indexes,
     api_items,
     api_overview,
@@ -332,6 +334,8 @@ app = Starlette(
         Route("/dashboard/api/users", api_users),
         Route("/dashboard/api/graph", api_graph),
         Route("/dashboard/api/indexes", api_indexes),
+        Route("/dashboard/api/index_graph", api_index_graph),
+        Route("/dashboard/api/index_chunks", api_index_chunks),
     ],
     middleware=_middleware,
     lifespan=lifespan,
