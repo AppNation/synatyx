@@ -304,3 +304,89 @@ async def test_search_flags_stale_hit(tmp_path: Path) -> None:
     search = IndexSearchService(storage, embedder=FakeEmbedder())  # type: ignore[arg-type]
     hits = await search.search("`get_storage_for`", "u1", top_k=1)
     assert hits[0].get("possibly_stale") is True
+
+
+# ── push indexing (diff / content upload) ────────────────────────────────────
+
+async def test_diff_files_reports_changed_and_removed(tmp_path: Path) -> None:
+    f = tmp_path / "doc.md"
+    f.write_text(_md(2))
+    svc, storage, _ = _service(tmp_path)
+    await svc.index(str(f), "u1")
+    server_hash = next(p["file_hash"] for _, p in storage.points.values())
+
+    diff = await svc.diff_files("u1", {
+        "doc.md": server_hash,        # unchanged
+        "new.py": "abc123",           # not on server → changed
+    })
+    assert diff["changed"] == ["new.py"]
+    assert diff["removed"] == []
+    assert diff["unchanged"] == 1
+
+    diff2 = await svc.diff_files("u1", {"other.md": "zzz"})
+    assert diff2["removed"] == ["doc.md"]
+    assert "other.md" in diff2["changed"]
+
+
+async def test_index_content_roundtrip(tmp_path: Path) -> None:
+    svc, storage, _ = _service(tmp_path)
+    code = "def pushed_function():\n    return 42\n"
+    result = await svc.index_content("u1", [{"path": "src/pushed.py", "content": code}])
+    assert result.files_indexed == 1
+    payloads = [p for _, p in storage.points.values()]
+    assert payloads[0]["path"] == "src/pushed.py"
+    assert payloads[0]["abs_path"] is None          # no server-side file
+    assert payloads[0]["symbol"] == "pushed_function"
+    assert payloads[0]["language"] == "python"
+
+    # idempotent: same content again → unchanged... (hash matches at chunk level,
+    # file-level skip happens in diff_files on the client path)
+    again = await svc.index_content("u1", [{"path": "src/pushed.py", "content": code}])
+    assert again.chunks_upserted == 0
+
+
+async def test_index_content_then_diff_unchanged(tmp_path: Path) -> None:
+    svc, _, _ = _service(tmp_path)
+    import hashlib as _h
+    code = "## Notes\n\npushed doc\n"
+    await svc.index_content("u1", [{"path": "notes.md", "content": code}])
+    digest = _h.sha256(code.encode()).hexdigest()[:16]
+    diff = await svc.diff_files("u1", {"notes.md": digest})
+    assert diff["changed"] == []
+    assert diff["unchanged"] == 1
+
+
+async def test_remove_files_sweeps_chunks(tmp_path: Path) -> None:
+    svc, storage, _ = _service(tmp_path)
+    await svc.index_content("u1", [{"path": "a.md", "content": _md(1)}])
+    assert storage.points
+    deleted = await svc.remove_files("u1", ["a.md"])
+    assert deleted >= 1
+    assert not storage.points
+
+
+async def test_status_skips_pushed_files_for_staleness(tmp_path: Path) -> None:
+    svc, _, _ = _service(tmp_path)
+    await svc.index_content("u1", [{"path": "remote.py", "content": "def f():\n    pass\n"}])
+    status = await svc.status("u1")
+    assert status["files"] == 1
+    assert status["missing_files"] == []   # abs_path is None → not "missing"
+
+
+# ── watch-root discovery ─────────────────────────────────────────────────────
+
+def test_discover_projects_repo_root(tmp_path: Path) -> None:
+    from src.core.index import discover_projects
+    (tmp_path / ".git").mkdir()
+    assert discover_projects(tmp_path) == [(tmp_path.name.lower().replace("-", "_"), tmp_path)]
+
+
+def test_discover_projects_workspace_root(tmp_path: Path) -> None:
+    from src.core.index import discover_projects
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-b").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "loose-file.txt").write_text("x")
+    found = discover_projects(tmp_path)
+    assert [slug for slug, _ in found] == ["proj_a", "proj_b"]

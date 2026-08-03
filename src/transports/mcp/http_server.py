@@ -215,6 +215,67 @@ async def capture(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Push-indexing endpoints — automatic project indexing from machines the
+# server can't read (client diffs file hashes, uploads only what changed).
+# Used by scripts/index_project.py; protected by the admin-key middleware.
+# ---------------------------------------------------------------------------
+
+async def _index_service_from(request: Request):
+    synatyx = getattr(request.app.state, "synatyx", None)
+    if synatyx is None:
+        return None, JSONResponse({"error": "server not ready"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return None, JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    user_id = str(body.get("user_id") or "").strip()
+    project = str(body.get("project") or "").strip()
+    if not user_id or not project:
+        return None, JSONResponse(
+            {"error": "user_id and project are required"}, status_code=400
+        )
+    from src.core.project import slugify
+    svc, _ = await synatyx._get_index_services(user_id, slugify(project))
+    return (svc, user_id, body), None
+
+
+async def index_diff(request: Request) -> JSONResponse:
+    ok, err = await _index_service_from(request)
+    if err is not None:
+        return err
+    svc, user_id, body = ok
+    files = body.get("files")
+    if not isinstance(files, dict):
+        return JSONResponse({"error": "files must be a {path: hash} object"}, status_code=400)
+    try:
+        return JSONResponse(await svc.diff_files(user_id, files))
+    except Exception:
+        logger.exception("index diff failed")
+        return JSONResponse({"error": "diff failed"}, status_code=500)
+
+
+async def index_files(request: Request) -> JSONResponse:
+    ok, err = await _index_service_from(request)
+    if err is not None:
+        return err
+    svc, user_id, body = ok
+    files = body.get("files") or []
+    prune = body.get("prune") or []
+    if not isinstance(files, list) or not isinstance(prune, list):
+        return JSONResponse(
+            {"error": "files must be a list of {path, content}; prune a list of paths"},
+            status_code=400,
+        )
+    try:
+        result = await svc.index_content(user_id, files, force=bool(body.get("force")))
+        pruned = await svc.remove_files(user_id, [str(p) for p in prune]) if prune else 0
+        return JSONResponse({**result.to_dict(), "chunks_pruned": pruned})
+    except Exception:
+        logger.exception("index upload failed")
+        return JSONResponse({"error": "index failed"}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
 # ASGI app — streamable-HTTP (modern, /mcp) + legacy SSE (deprecated,
 # /mcp/sse) + /health + /capture + dashboard, wrapped with lifespan.
 # ---------------------------------------------------------------------------
@@ -246,6 +307,8 @@ app = Starlette(
     routes=_streamable_app.routes + _sse_app.routes + [
         Route("/health", health),
         Route("/capture", capture, methods=["POST"]),
+        Route("/index/diff", index_diff, methods=["POST"]),
+        Route("/index/files", index_files, methods=["POST"]),
         Route("/dashboard", dashboard_page),
         Route("/dashboard/api/overview", api_overview),
         Route("/dashboard/api/items", api_items),

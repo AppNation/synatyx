@@ -153,6 +153,28 @@ class ObserverSettings(BaseSettings):
     )
 
 
+class IndexSettings(BaseSettings):
+    """Background code/doc indexing (GC daemon). Set INDEX_WATCH_ROOTS to a
+    comma-separated list of directories the daemon can read — a root that is
+    a git repo is one project; otherwise each immediate subdirectory becomes
+    a project named after the folder. Empty = disabled (use push indexing
+    via scripts/index_project.py when the code isn't on the server)."""
+
+    watch_roots: str = ""
+    run_interval_hours: int = 6
+    # user the auto-indexed chunks belong to; empty → DEFAULT_USER_ID
+    watch_user_id: str = ""
+    max_files_per_project: int = 2000
+
+    @property
+    def roots(self) -> list[str]:
+        return [r.strip() for r in self.watch_roots.split(",") if r.strip()]
+
+    model_config = SettingsConfigDict(
+        env_prefix="INDEX_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
+
+
 class TrackingSettings(BaseSettings):
     """Server-side session tracking — implicit capture with zero client setup.
 
@@ -212,6 +234,7 @@ class Settings(BaseSettings):
     consolidation: ConsolidationSettings = Field(default_factory=ConsolidationSettings)
     observer: ObserverSettings = Field(default_factory=ObserverSettings)
     tracking: TrackingSettings = Field(default_factory=TrackingSettings)
+    index: IndexSettings = Field(default_factory=IndexSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

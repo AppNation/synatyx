@@ -27,6 +27,11 @@ From memory server to context engine: Synatyx now assembles context, not just st
 - Modern endpoint at `/mcp` with `stateless_http=True` — deploy restarts no longer strand clients on dead session ids (the SSE `-32602` problem)
 - Legacy SSE stays mounted at `/mcp/sse` (deprecated)
 
+#### 🤖 Automatic indexing
+- **Push indexing** for repos the server can't read: `POST /index/diff` (hash manifest → what changed) + `POST /index/files` (upload changed content, prune deletions), driven by stdlib-only `scripts/index_project.py` — hook-safe for git post-commit / Claude Code SessionStart / cron
+- **Watch roots** for mounted code: `INDEX_WATCH_ROOTS` makes the GC daemon discover and re-index projects on an interval (git repo root = one project; workspace dir = one project per subdir)
+- Server build info surfaced on `/health` and the dashboard header (`v0.2.0 · 31 tools · <commit>`); `GIT_COMMIT` baked in at Docker build
+
 #### 🧰 Fixes & maintenance
 - Qdrant payload indexes on every hot filter field (previously all filters were unindexed)
 - `search()` now restores `created_at`, making the recency scoring signal real

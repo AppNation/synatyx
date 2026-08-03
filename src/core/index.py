@@ -180,6 +180,94 @@ class IndexService:
 
         return result
 
+    async def diff_files(
+        self, user_id: str, client_hashes: dict[str, str]
+    ) -> dict[str, Any]:
+        """Compare a client's {rel_path: file_hash} manifest against the index.
+
+        The push-indexing handshake: the client hashes everything locally,
+        asks what changed, and uploads only those files. `removed` lists
+        indexed paths absent from the client manifest."""
+        server_hashes = await self._indexed_file_hashes(user_id)
+        changed = [
+            path for path, digest in client_hashes.items()
+            if server_hashes.get(path) != digest
+        ]
+        removed = [path for path in server_hashes if path not in client_hashes]
+        return {
+            "changed": sorted(changed),
+            "removed": sorted(removed),
+            "unchanged": len(client_hashes) - len(changed),
+        }
+
+    async def index_content(
+        self,
+        user_id: str,
+        files: list[dict[str, str]],
+        force: bool = False,
+    ) -> IndexResult:
+        """Index files pushed as content (path + text) — no server filesystem
+        access needed, so this works when the repo lives on another machine.
+        Parsers read from disk, so each file is staged to a temp path with its
+        real extension before parsing."""
+        import tempfile
+
+        result = IndexResult(source="<push>", collection=self._storage.collection_name)
+        for f in files:
+            rel_path = str(f.get("path") or "").strip().lstrip("/")
+            content = f.get("content") or ""
+            if not rel_path or not content:
+                result.files_skipped += 1
+                continue
+            try:
+                data = content.encode("utf-8")
+                file_hash = hashlib.sha256(data).hexdigest()[:16]
+                suffix = Path(rel_path).suffix or ".txt"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(data)
+                    tmp_path = tmp.name
+                try:
+                    parser = get_parser(tmp_path)
+                    parsed = await parser.parse(tmp_path)
+                finally:
+                    os.unlink(tmp_path)
+                # parser metadata carries the temp path — replace with the real one
+                for pc in parsed:
+                    if isinstance(pc.metadata, dict) and "file" in pc.metadata:
+                        pc.metadata["file"] = rel_path
+                file_result = await self._upsert_parsed(
+                    parsed, rel_path, file_hash, user_id, force,
+                    abs_path=None,
+                    default_language=suffix.lstrip("."),
+                )
+            except Exception as exc:
+                logger.warning("Push index failed for %s: %s", rel_path, exc)
+                file_result = IndexFileResult(rel_path, "failed", error=str(exc)[:200])
+
+            if file_result.status == "indexed":
+                result.files_indexed += 1
+            elif file_result.status == "unchanged":
+                result.files_unchanged += 1
+            elif file_result.status == "skipped":
+                result.files_skipped += 1
+            else:
+                result.files_failed += 1
+            result.chunks_upserted += file_result.chunks_upserted
+            result.chunks_deleted += file_result.chunks_deleted
+            if file_result.status != "unchanged":
+                detail: dict[str, Any] = {"path": rel_path, "status": file_result.status}
+                if file_result.error:
+                    detail["error"] = file_result.error
+                result.details.append(detail)
+        return result
+
+    async def remove_files(self, user_id: str, paths: list[str]) -> int:
+        """Sweep all chunks of the given rel_paths (client-confirmed deletes)."""
+        deleted = 0
+        for rel_path in paths:
+            deleted += await self._delete_file_chunks(user_id, rel_path)
+        return deleted
+
     async def status(
         self, user_id: str, check_staleness: bool = True, stale_cap: int = 200
     ) -> dict[str, Any]:
@@ -354,7 +442,26 @@ class IndexService:
 
             parser = get_parser(str(path))
             parsed = await parser.parse(str(path))
+            return await self._upsert_parsed(
+                parsed, rel_path, file_hash, user_id, force,
+                abs_path=str(path.resolve()),
+                default_language=path.suffix.lstrip("."),
+            )
+        except Exception as exc:
+            logger.warning("Index failed for %s: %s", rel_path, exc)
+            return IndexFileResult(rel_path, "failed", error=str(exc)[:200])
 
+    async def _upsert_parsed(
+        self,
+        parsed: list[Any],
+        rel_path: str,
+        file_hash: str,
+        user_id: str,
+        force: bool,
+        abs_path: str | None,
+        default_language: str,
+    ) -> IndexFileResult:
+        try:
             # Chunk ONCE — split only oversized parser chunks, inherit metadata
             chunks: list[dict[str, Any]] = []
             for pc in parsed:
@@ -398,14 +505,16 @@ class IndexService:
                         "user_id": user_id,
                         "project": self._slug,
                         "path": rel_path,
-                        "abs_path": str(path.resolve()),
+                        # None for push-indexed content — the server has no
+                        # local file to hash; the client's diff is the truth
+                        "abs_path": abs_path,
                         "file_hash": file_hash,
                         "content_hash": c["hash"],
                         "content": c["text"],
                         "symbol": meta.get("name") or c["title"] or None,
                         "kind": meta.get("kind")
                             or ("section" if meta.get("language") is None else "chunk"),
-                        "language": meta.get("language") or path.suffix.lstrip("."),
+                        "language": meta.get("language") or default_language,
                         "line_start": meta.get("line_start"),
                         "line_end": meta.get("line_end"),
                         "chunk_index": i,
@@ -466,6 +575,24 @@ class IndexService:
                 FieldCondition(key="path", match=MatchValue(value=rel_path)),
             ])
         return len(existing)
+
+
+def discover_projects(root: Path) -> list[tuple[str, Path]]:
+    """Map a watch root to (project_slug, path) pairs for background indexing.
+
+    A root that is itself a git repo is one project; otherwise each immediate
+    non-hidden subdirectory is treated as a project named after the folder."""
+    from src.core.project import slugify
+
+    if not root.is_dir():
+        return []
+    if (root / ".git").exists():
+        return [(slugify(root.name), root)]
+    return [
+        (slugify(d.name), d)
+        for d in sorted(root.iterdir())
+        if d.is_dir() and not d.name.startswith(".") and d.name not in DEFAULT_EXCLUDES
+    ]
 
 
 DENSE_K_MULT = 3

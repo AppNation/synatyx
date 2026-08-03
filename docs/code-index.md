@@ -57,6 +57,50 @@ File/chunk counts, per-language breakdown, last index time, plus `stale_files`
 (changed on disk) and `missing_files` (deleted) so you know when to re-run
 `context_index`.
 
+## Automatic indexing
+
+Two mechanisms keep indexes fresh without anyone calling `context_index`. Both
+write only to `ctx_<slug>__index` — memories and code stay separated by
+construction.
+
+### Push indexing — when the code is NOT on the server
+
+The server can't read your laptop, so the client does the walking:
+
+```bash
+export SYNATYX_URL=https://context.example.com SYNATYX_AUTH_KEY=...
+python scripts/index_project.py --root ~/workspace/my-app --project my-app
+```
+
+The script hashes every indexable file locally, asks `POST /index/diff` what
+changed, uploads only those files to `POST /index/files` (batched), and prunes
+deletions. An unchanged repo costs one small request. It always exits 0, so
+it's safe to wire anywhere:
+
+- **git post-commit hook** (`.git/hooks/post-commit`):
+  ```bash
+  #!/bin/sh
+  python /path/to/synatyx/scripts/index_project.py --root "$(git rev-parse --show-toplevel)" &
+  ```
+- **Claude Code SessionStart hook** (`.claude/settings.json`):
+  ```json
+  { "hooks": { "SessionStart": [ { "hooks": [ { "type": "command",
+    "command": "python /path/to/synatyx/scripts/index_project.py" } ] } ] } }
+  ```
+
+### Watch roots — when the code IS on the server
+
+Set `INDEX_WATCH_ROOTS` and the GC daemon discovers and re-indexes projects on
+an interval (default 6h):
+
+```
+INDEX_WATCH_ROOTS=/workspace          # each subdir = one project
+INDEX_WATCH_ROOTS=/srv/repos/my-app   # a git repo root = one project
+```
+
+Idempotent per pass — unchanged files cost one hash each. Works great with a
+read-only volume mount in docker-compose.
+
 ## How `context_pack` uses it
 
 When a project has an index, `context_pack` adds a `code` section (14% of the
