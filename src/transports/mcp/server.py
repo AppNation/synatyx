@@ -250,6 +250,139 @@ class SynatyxMCPServer:
             await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
             return [TextContent(type="text", text=json.dumps(result, default=str))]
 
+        self._register_resources()
+        self._register_prompts()
+
+    def _register_resources(self) -> None:
+        """Proactive context: clients that speak MCP resources can pull the
+        session brief without any tool-call discipline. Identity comes from
+        settings.default_user_id (resources carry no user_id argument)."""
+        from mcp.types import Resource
+        from pydantic import AnyUrl
+
+        @self._server.list_resources()
+        async def list_resources() -> list[Resource]:
+            return [
+                Resource(
+                    uri=AnyUrl("context://brief"),
+                    name="Session brief",
+                    description=(
+                        "Token-budgeted session-start digest for the default "
+                        "user's active project: identity, project knowledge, "
+                        "recent changes, attempts, open tasks."
+                    ),
+                    mimeType="application/json",
+                ),
+                Resource(
+                    uri=AnyUrl("context://projects"),
+                    name="Projects",
+                    description="Known project collections and the active project.",
+                    mimeType="application/json",
+                ),
+            ]
+
+        @self._server.read_resource()
+        async def read_resource(uri: Any) -> str:
+            import json
+
+            user_id = settings.default_user_id
+            try:
+                if str(uri) == "context://brief":
+                    result = await self._dispatch("context_brief", {"user_id": user_id})
+                elif str(uri) == "context://projects":
+                    from src.core.project import is_index_collection
+                    active = await self._project_manager.get_project(user_id)
+                    collections = [
+                        c for c in await self._default_qdrant.get_all_collections()
+                        if c.startswith("ctx_") and not is_index_collection(c)
+                    ]
+                    result = {"active_project": active, "collections": sorted(collections)}
+                else:
+                    result = {"error": f"unknown resource {uri}"}
+            except Exception as exc:
+                logger.exception("Resource read failed for %s", uri)
+                result = {"error": str(exc)}
+            return json.dumps(result, default=str)
+
+    def _register_prompts(self) -> None:
+        """Prompts render the brief/pack as ready-to-inject messages."""
+        from mcp.types import (
+            GetPromptResult,
+            Prompt,
+            PromptArgument,
+            PromptMessage,
+        )
+
+        @self._server.list_prompts()
+        async def list_prompts() -> list[Prompt]:
+            return [
+                Prompt(
+                    name="session-start",
+                    description=(
+                        "Session-start context digest for a project — inject "
+                        "at the top of a new conversation."
+                    ),
+                    arguments=[
+                        PromptArgument(
+                            name="project",
+                            description="Project slug (optional — defaults to the active project)",
+                            required=False,
+                        ),
+                    ],
+                ),
+                Prompt(
+                    name="pack-context",
+                    description=(
+                        "Assembled, token-budgeted context block for a specific "
+                        "task, with provenance markers."
+                    ),
+                    arguments=[
+                        PromptArgument(name="query", description="The task to pack context for", required=True),
+                        PromptArgument(name="project", description="Project slug (optional)", required=False),
+                        PromptArgument(name="max_tokens", description="Token budget (default 3000)", required=False),
+                    ],
+                ),
+            ]
+
+        @self._server.get_prompt()
+        async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+            import json
+
+            args = arguments or {}
+            user_id = settings.default_user_id
+            try:
+                if name == "session-start":
+                    call: dict[str, Any] = {"user_id": user_id}
+                    if args.get("project"):
+                        call["project"] = args["project"]
+                    brief = await self._dispatch("context_brief", call)
+                    text = (
+                        "Context from Synatyx memory (session brief):\n\n"
+                        + json.dumps(brief, indent=2, default=str)
+                    )
+                elif name == "pack-context":
+                    call = {"user_id": user_id, "query": args.get("query", "")}
+                    if args.get("project"):
+                        call["project"] = args["project"]
+                    if args.get("max_tokens"):
+                        call["max_tokens"] = int(args["max_tokens"])
+                    packed = await self._dispatch("context_pack", call)
+                    text = packed.get("rendered", "") or "(no context matched)"
+                else:
+                    text = f"Unknown prompt: {name}"
+            except Exception as exc:
+                logger.exception("Prompt %r failed", name)
+                text = f"Context unavailable: {exc}"
+            return GetPromptResult(
+                description=f"Synatyx {name}",
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(type="text", text=text),
+                    )
+                ],
+            )
+
     async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         user_id = args.get("user_id", "")
 

@@ -88,6 +88,11 @@ mcp = FastMCP(
     port=_port,
     sse_path="/mcp/sse",
     message_path="/mcp/messages/",
+    streamable_http_path="/mcp",
+    # Every Synatyx tool is stateless per-call, so no session state to lose:
+    # deploy restarts stop stranding clients on dead session ids (the old
+    # SSE -32602 problem).
+    stateless_http=True,
 )
 
 
@@ -115,8 +120,11 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 
     synatyx = SynatyxMCPServer(qdrant, redis, postgres)
     # Inject the fully-wired low-level Server into FastMCP so that handle_sse
-    # picks it up on every incoming request.
+    # picks it up on every incoming request. The streamable-HTTP session
+    # manager captured the placeholder server at construction, so rebind its
+    # app reference too — it reads self.app per request.
     mcp._mcp_server = synatyx._server
+    mcp.session_manager.app = synatyx._server
     # Expose the server to plain REST routes (e.g. /capture) via app state.
     _app.state.synatyx = synatyx
     # Raw storages for the dashboard API (read-only aggregate views).
@@ -127,9 +135,16 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     import asyncio
     tracking_task = asyncio.create_task(synatyx.run_tracking_loop())
 
-    logger.info("Synatyx MCP HTTP server ready on %s:%d", _host, _port)
+    logger.info(
+        "Synatyx MCP HTTP server ready on %s:%d — streamable-HTTP at /mcp, "
+        "legacy SSE at /mcp/sse",
+        _host, _port,
+    )
 
-    yield
+    # The streamable-HTTP session manager needs its task group running for
+    # the lifetime of the app.
+    async with mcp.session_manager.run():
+        yield
 
     tracking_task.cancel()
     await qdrant.close()
@@ -188,9 +203,13 @@ async def capture(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# ASGI app — FastMCP SSE routes + /health, wrapped with lifespan.
+# ASGI app — streamable-HTTP (modern, /mcp) + legacy SSE (deprecated,
+# /mcp/sse) + /health + /capture + dashboard, wrapped with lifespan.
 # ---------------------------------------------------------------------------
 
+# streamable_http_app() must be built before the lifespan runs — it creates
+# mcp.session_manager, which the lifespan rebinds and runs.
+_streamable_app = mcp.streamable_http_app()
 _sse_app = mcp.sse_app()
 
 # /dashboard serves only the static shell — every data endpoint under
@@ -212,7 +231,7 @@ else:
     logger.warning("AUTH_ADMIN_KEY not set — MCP HTTP server is UNAUTHENTICATED")
 
 app = Starlette(
-    routes=_sse_app.routes + [
+    routes=_streamable_app.routes + _sse_app.routes + [
         Route("/health", health),
         Route("/capture", capture, methods=["POST"]),
         Route("/dashboard", dashboard_page),

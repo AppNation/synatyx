@@ -179,11 +179,22 @@ class TrackingSettings(BaseSettings):
     )
 
 
+def _default_user_id() -> str:
+    import getpass
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "default"
+
+
 class Settings(BaseSettings):
     app_name: str = "Synatyx Context Engine"
     debug: bool = False
     log_level: str = "INFO"
     run_mode: RunMode = RunMode.MCP
+    # Identity used by MCP resources/prompts, which have no user_id argument
+    # channel in most clients. Env: DEFAULT_USER_ID; falls back to OS user.
+    default_user_id: str = Field(default_factory=_default_user_id)
 
     # Use Field(default_factory=...) so each sub-settings class is instantiated
     # independently and resolves its own env vars with its own env_prefix.

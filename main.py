@@ -13,7 +13,8 @@ logger = logging.getLogger("synatyx")
 
 def _run_mcp_http(host: str, port: int, debug: bool) -> None:
     import uvicorn
-    logger.info("MCP SSE  : http://%s:%d/mcp/sse", host, port)
+    logger.info("MCP      : http://%s:%d/mcp  (streamable-HTTP)", host, port)
+    logger.info("MCP SSE  : http://%s:%d/mcp/sse  (legacy, deprecated)", host, port)
     logger.info("Health   : http://%s:%d/health", host, port)
     uvicorn.run(
         "src.transports.mcp.http_server:app",
