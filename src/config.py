@@ -126,6 +126,33 @@ class RelationSettings(BaseSettings):
     )
 
 
+class ObserverSettings(BaseSettings):
+    """Background auto-relate pass: links similar same-user memories.
+
+    Runs in the GC daemon on its own interval (default 6h = 4×/day). Only
+    ever creates `related_to` edges — semantic types (depends_on, caused_by)
+    need meaning that cosine similarity cannot infer. Every edge carries
+    metadata {auto: true, origin: "observer", score} so inferred edges are
+    distinguishable from deliberate ones and a bad run can be bulk-removed.
+    """
+
+    enabled: bool = True
+    run_interval_hours: int = 6
+    # cosine similarity two items must reach to be linked
+    similarity_threshold: float = 0.80
+    # cap on observer-created edges per item — keeps clusters from becoming
+    # fully-connected hairballs (manual edges never count against this)
+    max_edges_per_item: int = 3
+    # safety valve: max new edges per run across all collections
+    max_edges_per_run: int = 50
+    # log would-be edges without writing them — for tuning the threshold
+    dry_run: bool = False
+
+    model_config = SettingsConfigDict(
+        env_prefix="OBSERVER_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
+
+
 class TrackingSettings(BaseSettings):
     """Server-side session tracking — implicit capture with zero client setup.
 
@@ -168,6 +195,7 @@ class Settings(BaseSettings):
     gc: GCSettings = Field(default_factory=GCSettings)
     relation: RelationSettings = Field(default_factory=RelationSettings)
     consolidation: ConsolidationSettings = Field(default_factory=ConsolidationSettings)
+    observer: ObserverSettings = Field(default_factory=ObserverSettings)
     tracking: TrackingSettings = Field(default_factory=TrackingSettings)
 
     model_config = SettingsConfigDict(

@@ -89,6 +89,7 @@ def main() -> None:
 async def _run_gc() -> None:
     from src.core.consolidate import Consolidator
     from src.core.gc import GarbageCollector
+    from src.core.observer import RelationObserver
     from src.config import settings
     from src.storage.postgres import PostgresStorage
     from src.storage.qdrant import QdrantStorage
@@ -109,6 +110,19 @@ async def _run_gc() -> None:
     gc = GarbageCollector(qdrant=qdrant, postgres=postgres, settings=settings.gc)
     consolidator = Consolidator(qdrant=qdrant, postgres=postgres, settings=settings.consolidation)
 
+    # The observer runs on its own (shorter) interval as a sibling task —
+    # auto-relating 4×/day shouldn't wait for the daily GC/consolidation pass.
+    observer = RelationObserver(qdrant=qdrant, postgres=postgres, settings=settings.observer)
+    if settings.observer.enabled:
+        logger.info(
+            "Observer enabled — interval=%dh threshold=%.2f cap/item=%d dry_run=%s",
+            settings.observer.run_interval_hours,
+            settings.observer.similarity_threshold,
+            settings.observer.max_edges_per_item,
+            settings.observer.dry_run,
+        )
+        asyncio.create_task(_observer_loop(observer, settings.observer.run_interval_hours))
+
     while True:
         if settings.gc.enabled:
             try:
@@ -127,6 +141,16 @@ async def _run_gc() -> None:
                 logger.error("Consolidation pass failed: %s", exc, exc_info=True)
 
         await asyncio.sleep(interval_seconds)
+
+
+async def _observer_loop(observer, interval_hours: int) -> None:
+    while True:
+        try:
+            summary = await observer.run_once()
+            logger.info("Observer pass complete: %s", summary)
+        except Exception as exc:
+            logger.error("Observer pass failed: %s", exc, exc_info=True)
+        await asyncio.sleep(interval_hours * 3600)
 
 
 if __name__ == "__main__":
