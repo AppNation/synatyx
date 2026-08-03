@@ -12,6 +12,9 @@ from src.models.relation import MemoryRelation
 from src.models.task import Task, TaskPriority, TaskStatus
 from src.transports.mcp.dashboard import (
     api_graph,
+    api_index_chunks,
+    api_index_graph,
+    api_indexes,
     api_items,
     api_overview,
     api_tasks,
@@ -138,6 +141,9 @@ def _client(
             Route("/dashboard/api/tasks", api_tasks),
             Route("/dashboard/api/users", api_users),
             Route("/dashboard/api/graph", api_graph),
+            Route("/dashboard/api/indexes", api_indexes),
+            Route("/dashboard/api/index_graph", api_index_graph),
+            Route("/dashboard/api/index_chunks", api_index_chunks),
         ]
     )
     app.state.qdrant = FakeQdrant(collections)
@@ -345,3 +351,94 @@ def test_endpoints_503_before_lifespan() -> None:
     app = Starlette(routes=[Route("/dashboard/api/overview", api_overview)])
     client = TestClient(app)
     assert client.get("/dashboard/api/overview").status_code == 503
+
+
+# ── api_indexes ──────────────────────────────────────────────────────────────
+
+def test_indexes_lists_index_collections_only() -> None:
+    collections = {
+        "ctx_synatyx": [_item()],
+        "ctx_myapp__index": [
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 3, "language": "python",
+             "path": "src/a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 1, "chunk_total": 3, "language": "python",
+             "path": "src/a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 2, "language": "md",
+             "path": "README.md", "indexed_at": "2026-08-03T11:00:00+00:00"},
+        ],
+    }
+    client = _client(collections, tasks=[])
+    res = client.get("/dashboard/api/indexes")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["count"] == 1
+    ix = data["indexes"][0]
+    assert ix["project"] == "myapp"
+    assert ix["files"] == 2          # chunk-0 records only
+    assert ix["chunks"] == 5         # 3 + 2 via chunk_total
+    assert ix["by_language"] == {"python": 1, "md": 1}
+    assert ix["last_indexed_at"] == "2026-08-03T11:00:00+00:00"
+    assert ix["users"] == ["u1"]
+
+
+def test_overview_still_excludes_index_collections() -> None:
+    collections = {
+        "ctx_synatyx": [_item()],
+        "ctx_myapp__index": [
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 1, "language": "python",
+             "path": "a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+        ],
+    }
+    client = _client(collections, tasks=[])
+    names = [c["collection"] for c in client.get("/dashboard/api/overview").json()["collections"]]
+    assert "ctx_myapp__index" not in names
+
+
+def _index_collections() -> dict[str, Any]:
+    return {
+        "ctx_myapp__index": [
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 2, "language": "python",
+             "path": "src/core/a.py", "symbol": "AThing", "kind": "class",
+             "line_start": 1, "line_end": 20, "content": "class AThing: ...",
+             "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 1, "chunk_total": 2, "language": "python",
+             "path": "src/core/a.py", "symbol": "AThing.run", "kind": "method",
+             "line_start": 21, "line_end": 40, "content": "def run(self): ...",
+             "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 1, "language": "md",
+             "path": "README.md", "symbol": "Intro", "kind": "section",
+             "content": "# Intro", "indexed_at": "2026-08-03T10:00:00+00:00"},
+        ],
+    }
+
+
+def test_index_graph_files_and_dirs() -> None:
+    client = _client(_index_collections(), tasks=[])
+    res = client.get("/dashboard/api/index_graph?collection=ctx_myapp__index")
+    assert res.status_code == 200
+    data = res.json()
+    ids = {n["id"] for n in data["nodes"]}
+    assert {"root", "f:src/core/a.py", "f:README.md", "d:src", "d:src/core"} <= ids
+    edge_pairs = {(e["source"], e["target"]) for e in data["edges"]}
+    assert ("f:src/core/a.py", "d:src/core") in edge_pairs
+    assert ("d:src/core", "d:src") in edge_pairs
+    assert ("d:src", "root") in edge_pairs
+    assert ("f:README.md", "root") in edge_pairs
+    file_node = next(n for n in data["nodes"] if n["id"] == "f:src/core/a.py")
+    assert file_node["chunks"] == 2 and file_node["language"] == "python"
+
+
+def test_index_chunks_filter_and_order() -> None:
+    client = _client(_index_collections(), tasks=[])
+    res = client.get("/dashboard/api/index_chunks?collection=ctx_myapp__index")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total"] == 3
+    assert [c["path"] for c in data["chunks"]] == ["README.md", "src/core/a.py", "src/core/a.py"]
+
+    filtered = client.get("/dashboard/api/index_chunks?collection=ctx_myapp__index&q=athing").json()
+    assert filtered["total"] == 2
+    assert all("AThing" in c["symbol"] for c in filtered["chunks"])
+
+    bad = client.get("/dashboard/api/index_chunks?collection=ctx_myapp")
+    assert bad.status_code == 400

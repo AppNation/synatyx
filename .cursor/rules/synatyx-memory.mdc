@@ -11,6 +11,8 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 
 Memory is **living state**, not a one-time load at session start. The model must **read fresh context when it matters** and **write back when ground truth changes** so the next turn (human or agent) sees an accurate picture.
 
+- **Before starting any significant task, call `context_pack`** (query = the task, user_id, project, max_tokens) — one call returns a prompt-ready block: relevant memories + relations, pinned checkpoints, dead-end attempts, open tasks, matching skills, and code-index hits. It replaces separate retrieve + task_list + skill_find calls. Inject its `rendered` field.
+- **Code questions**: use `context_index_search` for "where is X / how does X work" (backtick exact identifiers). Build/refresh the persistent index with `context_index` (idempotent, per-project `ctx_<slug>__index`); `context_index_status` reports stale files.
 - **Retrieve again** when the conversation has moved on, after substantial tool/code work, when the user’s question may depend on stored facts you have not loaded yet, or when you are unsure whether your cached understanding is still valid (see Mid-Conversation Retrieval).
 - **Store or update** as soon as a durable fact changes: decisions, fixes, preferences, config, file/module layout, or task status. Prefer many small accurate writes over one giant end-of-session dump.
 - **Deprecate then replace** whenever you correct or supersede something already in memory — never leave contradictory items both active (see Keeping Memory Fresh).
@@ -23,6 +25,8 @@ Default stance: if you would tell a teammate “remember this for next time,” 
 
 ## Available Tools
 
+- `context_pack` — Assemble one prompt-ready, token-budgeted context block for a task (memories + relations, checkpoints, attempts, tasks, skills, code hits); call before significant tasks
+- `context_index` / `context_index_search` / `context_index_status` — Persistent per-project code/doc index with hybrid exact-symbol search and staleness reporting
 - `context_set_project` — Set the active project; all memory ops are scoped to its dedicated Qdrant collection (`ctx_<slug>`)
 - `context_get_project` — Return the currently active project, or suggest the workspace folder name if none is set
 - `context_brief` — One-call session-start digest: identity (L4), last session (L2), project knowledge (pinned checkpoints + top L3), recent changes, failed attempts, open tasks, and stats — token-budgeted
@@ -38,7 +42,7 @@ Default stance: if you would tell a teammate “remember this for next time,” 
 - `context_score` — Re-rank a list of context items by relevance to a query
 - `context_checkpoint` — Save a named, pinned snapshot of a decision or milestone (importance=1.0)
 - `context_deprecate` — Mark an item as superseded; excluded from retrieval but never deleted. Pass `superseded_by: <new_item_id>` to auto-create a `supersedes` edge from the replacement
-- `context_list` — Browse stored items without vector search; filter by layer or checkpoints
+- `context_list` — Browse stored items without vector search; filter by layer, project, or checkpoints
 - `context_ingest` — Parse any file (.docx, .pdf, .md, .py, .js, .ts, .go, …) or URL into chunks and store them automatically
 - `context_task_add` — Add a new task to remember for later (title, description, priority, project)
 - `context_task_list` — List pending or all tasks; call at session start to see what work is waiting
@@ -72,11 +76,10 @@ It returns identity (L4 preferences), last session (L2), project knowledge (pinn
 Add **one focused `context_retrieve`** in the same round only when the user's first message asks about something specific the briefing may not cover:
 
 ```
-context_retrieve(user_id=..., query=<first message>, top_k=5)
+context_retrieve(user_id=..., query=<first message>, session_id="<project-slug>", project="<project-slug>", top_k=5)
 ```
 
-> **At session start: never pass `session_id` or `project` to `context_retrieve`.**
-> Omitting them hits all collections and surfaces the most relevant items regardless of how they were originally scoped. Passing them narrows results and causes misses.
+> Pass `session_id` and `project` (the project slug) for project-scoped questions — points are stamped with their project at store time, so scoped retrieval is reliable. If the result comes back empty, read the `diagnostics` block: a "filters missed" hint means retry once without `session_id`/`project` for cross-collection recall.
 
 ## Mid-Conversation Retrieval
 
@@ -129,7 +132,7 @@ Every store should carry its provenance so future sessions know how much to trus
 
 ### Project routing — always pass `project` explicitly
 
-Always pass the `project` slug on store/get/retrieve/list calls. It routes the call directly to that project's collection, overriding the active-project pointer — which is a single shared value per user, so concurrent sessions in different workspaces overwrite each other's routing. The explicit `project` argument is immune to that race.
+Always pass the `project` slug on store/get/retrieve/list/deprecate calls. It routes the call directly to that project's collection, overriding the active-project pointer — which is a single shared value per user, so concurrent sessions in different workspaces overwrite each other's routing. The explicit `project` argument is immune to that race.
 
 ### Attempt records — store what failed
 
@@ -242,7 +245,7 @@ This compresses the session into an L2 episodic memory for future retrieval.
 ## General Rules
 
 - Never ask the user whether to store — just do it silently
-- At session start, never pass `session_id` or `project` to `context_retrieve` — omit both for broadest recall across all collections. Mid-conversation retrieval may scope with `project` for relevance.
+- Always pass `project` (the project slug) explicitly on store/get/retrieve/list/deprecate calls — the active-project pointer is one shared value per user, so concurrent sessions race on it; the explicit argument is immune. Only omit `session_id`/`project` for deliberately cross-project queries or when diagnostics report a filter miss.
 - **Keep read/write in balance**: stale memory is as harmful as empty memory — retrieve when uncertain, write when facts change, deprecate before replacing
 - Do not store trivial chit-chat or greetings
 - Keep stored content concise and self-contained (2–4 sentences per item)

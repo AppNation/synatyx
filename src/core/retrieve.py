@@ -108,6 +108,7 @@ class RetrieveService:
         top_k: int = 10,
         memory_layers: list[MemoryLayer] | None = None,
         use_mmr: bool = True,
+        query_embedding: list[float] | None = None,
     ) -> RetrieveResult:
         """
         Hybrid retrieval: dense kNN + BM25 score fusion + MMR diversification.
@@ -123,7 +124,8 @@ class RetrieveService:
         7. Apply MMR diversification
         """
         layers = memory_layers or list(MemoryLayer)
-        query_embedding = await self._embedder.embed(query)
+        if query_embedding is None:
+            query_embedding = await self._embedder.embed(query)
 
         all_items: list[ContextItem] = []
 

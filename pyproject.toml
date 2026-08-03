@@ -1,6 +1,6 @@
 [project]
 name = "synatyx"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-source Context Engine for LLMs — persistent, relevance-scored memory layer"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -19,8 +19,9 @@ dependencies = [
     "asyncpg>=0.29.0",
     "alembic>=1.13.0",
     "openai>=1.35.0",
-    # MCP
-    "mcp>=1.0.0",
+    # MCP — pinned below 2.0: the Dockerfile installs from pyproject (not
+    # uv.lock), and mcp 2.0 removed mcp.server.fastmcp, breaking fresh builds
+    "mcp>=1.26.0,<2",
     # Observability
     "opentelemetry-api>=1.25.0",
     "opentelemetry-sdk>=1.25.0",

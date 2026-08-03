@@ -13,7 +13,8 @@ logger = logging.getLogger("synatyx")
 
 def _run_mcp_http(host: str, port: int, debug: bool) -> None:
     import uvicorn
-    logger.info("MCP SSE  : http://%s:%d/mcp/sse", host, port)
+    logger.info("MCP      : http://%s:%d/mcp  (streamable-HTTP)", host, port)
+    logger.info("MCP SSE  : http://%s:%d/mcp/sse  (legacy, deprecated)", host, port)
     logger.info("Health   : http://%s:%d/health", host, port)
     uvicorn.run(
         "src.transports.mcp.http_server:app",
@@ -123,6 +124,13 @@ async def _run_gc() -> None:
         )
         asyncio.create_task(_observer_loop(observer, settings.observer.run_interval_hours))
 
+    if settings.index.roots:
+        logger.info(
+            "Index watcher enabled — roots=%s interval=%dh",
+            settings.index.roots, settings.index.run_interval_hours,
+        )
+        asyncio.create_task(_index_watch_loop(settings))
+
     while True:
         if settings.gc.enabled:
             try:
@@ -141,6 +149,49 @@ async def _run_gc() -> None:
                 logger.error("Consolidation pass failed: %s", exc, exc_info=True)
 
         await asyncio.sleep(interval_seconds)
+
+
+async def _index_watch_loop(settings) -> None:
+    """Background auto-indexing: discover projects under INDEX_WATCH_ROOTS and
+    keep their ctx_<slug>__index collections fresh. Idempotent per pass —
+    unchanged files cost one hash each."""
+    from pathlib import Path
+
+    from src.core.index import INDEX_PAYLOAD_SCHEMA, IndexService, discover_projects
+    from src.core.project import index_collection_for
+    from src.storage.qdrant import QdrantStorage
+
+    user_id = settings.index.watch_user_id or settings.default_user_id
+
+    while True:
+        try:
+            for root in settings.index.roots:
+                for slug, path in discover_projects(Path(root)):
+                    try:
+                        storage = QdrantStorage(
+                            host=settings.qdrant.host,
+                            port=settings.qdrant.port,
+                            collection_name=index_collection_for(slug),
+                        )
+                        await storage.init_collection()
+                        await storage.ensure_payload_indexes(INDEX_PAYLOAD_SCHEMA)
+                        svc = IndexService(storage, slug)
+                        result = await svc.index(
+                            str(path), user_id,
+                            max_files=settings.index.max_files_per_project,
+                        )
+                        if result.files_indexed or result.chunks_deleted:
+                            logger.info(
+                                "Index watcher %s: %d indexed, %d unchanged, %d chunks swept",
+                                slug, result.files_indexed, result.files_unchanged,
+                                result.chunks_deleted,
+                            )
+                        await storage.close()
+                    except Exception as exc:
+                        logger.warning("Index watcher failed for %s: %s", slug, exc)
+        except Exception as exc:
+            logger.error("Index watcher pass failed: %s", exc, exc_info=True)
+        await asyncio.sleep(settings.index.run_interval_hours * 3600)
 
 
 async def _observer_loop(observer, interval_hours: int) -> None:

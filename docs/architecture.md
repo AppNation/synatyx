@@ -4,25 +4,56 @@
 
 ```mermaid
 flowchart LR
-    IDE(["🖥️ IDE\nAugment / Cursor / Claude"])
+    IDE(["🖥️ IDE\nClaude / Cursor / Augment"])
     MCP["⚙️ Synatyx\nMCP Server"]
     LLM(["🤖 LLM"])
 
-    IDE -->|MCP stdio| MCP
-    MCP -->|context injected| LLM
+    IDE -->|"MCP (streamable-HTTP / stdio)"| MCP
+    MCP -->|assembled context injected| LLM
 
-    subgraph Memory ["4-Layer Memory"]
-        L1["🔴 L1 · Redis\nWorking Memory · ~4k tokens"]
-        L2["🟠 L2 · Qdrant\nEpisodic Summaries · ~1k tokens"]
-        L3["🟡 L3 · Qdrant\nSemantic Knowledge · ~2k tokens"]
-        L4["🟢 L4 · Qdrant\nPermanent Rules · ~500 tokens"]
+    subgraph Engine ["Context Engine"]
+        PACK["📦 context_pack\nquery-driven assembly"]
+        IDX["🗂️ ctx_<slug>__index\npersistent code/doc index"]
+        subgraph Memory ["4-Layer Memory"]
+            L1["🔴 L1 · Redis\nWorking Memory"]
+            L2["🟠 L2 · Qdrant\nEpisodic Summaries"]
+            L3["🟡 L3 · Qdrant\nSemantic Knowledge"]
+            L4["🟢 L4 · Qdrant\nPermanent Rules"]
+        end
     end
 
-    MCP <-->|read / write| L1
-    MCP <-->|read / write| L2
-    MCP <-->|read / write| L3
-    MCP <-->|read / write| L4
+    MCP <--> PACK
+    PACK <--> Memory
+    PACK <--> IDX
 ```
+
+---
+
+## Context Assembly
+
+Two assembly tools sit above the memory layers:
+
+- **`context_brief`** (session start) — scroll-and-sort digest: identity, last
+  session, project knowledge, recent changes, attempts, open tasks.
+- **`context_pack`** (any task) — query-driven: every section is selected by
+  relevance to the task, packed by a weighted section budgeter with spillover
+  reallocation, and rendered to prompt-ready markdown with provenance and
+  staleness markers. Consumes the code index when one exists.
+  → [context-pack.md](context-pack.md)
+
+Both are also exposed proactively: MCP **resources** (`context://brief`,
+`context://projects`) and **prompts** (`session-start`, `pack-context`), using
+`DEFAULT_USER_ID` for identity.
+
+---
+
+## Code & Doc Index
+
+Each project can own a persistent index in a sibling collection
+`ctx_<slug>__index` — deterministic chunk ids, incremental re-embedding,
+hybrid dense + exact-symbol + full-text search. GC, consolidation, and the
+relation observer skip `__index` collections by construction.
+→ [code-index.md](code-index.md)
 
 ---
 
@@ -62,7 +93,7 @@ flowchart LR
 | Component | Technology |
 |-----------|-----------|
 | Core | Python 3.12 + asyncio |
-| MCP Transport | Anthropic MCP SDK — JSON-RPC 2.0 / stdio |
+| MCP Transport | Anthropic MCP SDK — streamable-HTTP (stateless) / stdio; legacy SSE kept at `/mcp/sse` |
 | Vector DB | Qdrant |
 | Working Memory | Redis |
 | Metadata + Tasks | PostgreSQL + Alembic |

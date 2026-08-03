@@ -3,76 +3,121 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Synatyx — Memory Dashboard</title>
+<title>Synatyx — Memory Core</title>
 <style>
+  /* SINGULARITY — sleek starship glass. Deliberately single-theme: the
+     aurora-on-near-black ground is the identity, so no light variant. */
   :root {
-    color-scheme: light;
-    --page:           #f9f9f7;
-    --surface:        #fcfcfb;
-    --ink:            #0b0b0b;
-    --ink-2:          #52514e;
-    --muted:          #898781;
-    --grid:           #e1e0d9;
-    --baseline:       #c3c2b7;
-    --border:         rgba(11,11,11,0.10);
+    color-scheme: dark;
+    --bg:      #08070f;
+    --ink:     #f1f2fa;
+    --ink-2:   #d6d9ea;
+    --muted:   #8b90a6;
+    --panel:   rgba(255,255,255,0.045);
+    --line:    rgba(255,255,255,0.09);
+    --line-2:  rgba(255,255,255,0.16);
+    --violet:  #a78bfa;
+    --cyan:    #67e8f9;
+    --rose:    #fb7185;
     /* layer identity — categorical slots 1-4, fixed order, never cycled */
-    --l1: #2a78d6;  /* blue    */
-    --l2: #eb6834;  /* orange  */
-    --l3: #1baf7a;  /* aqua    */
-    --l4: #eda100;  /* yellow  */
-    --status-good:     #0ca30c;
-    --status-warning:  #fab219;
-    --status-serious:  #ec835a;
-    --status-critical: #d03b3b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --page:     #0d0d0d;
-      --surface:  #1a1a19;
-      --ink:      #ffffff;
-      --ink-2:    #c3c2b7;
-      --muted:    #898781;
-      --grid:     #2c2c2a;
-      --baseline: #383835;
-      --border:   rgba(255,255,255,0.10);
-      --l1: #3987e5;
-      --l2: #d95926;
-      --l3: #199e70;
-      --l4: #c98500;
-    }
+    --l1: #67e8f9;  /* cyan   */
+    --l2: #fb7185;  /* rose   */
+    --l3: #34d399;  /* green  */
+    --l4: #a78bfa;  /* violet */
+    --status-good:     #34d399;
+    --status-warning:  #fbbf24;
+    --status-serious:  #fb923c;
+    --status-critical: #f87171;
   }
   * { box-sizing: border-box; margin: 0; }
   body {
-    background: var(--page);
+    background:
+      radial-gradient(1000px 560px at 12% -5%, rgba(124,58,237,0.20), transparent 60%),
+      radial-gradient(900px 520px at 88% 8%, rgba(6,182,212,0.14), transparent 60%),
+      radial-gradient(800px 560px at 50% 115%, rgba(190,24,93,0.10), transparent 60%),
+      var(--bg);
+    background-attachment: fixed;
     color: var(--ink);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     padding: 24px;
+    min-height: 100vh;
   }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   .wrap { max-width: 1180px; margin: 0 auto; }
-  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-  header h1 { font-size: 20px; font-weight: 650; }
-  header .sub { color: var(--muted); font-size: 13px; }
+
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; flex-wrap: wrap; }
+  header h1 {
+    font-size: 21px; font-weight: 750; letter-spacing: 0.14em; text-transform: uppercase;
+    background: linear-gradient(90deg, var(--cyan), var(--violet) 55%, var(--rose));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  header .sub {
+    color: var(--muted); font-size: 11px; letter-spacing: 0.1em;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
   header .spacer { flex: 1; }
+  header .live { display: inline-flex; align-items: center; gap: 8px; }
+  header .live i {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+
   button, select {
     font: inherit; color: var(--ink);
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px 12px; cursor: pointer;
+    backdrop-filter: blur(8px);
   }
-  button:hover, select:hover { border-color: var(--baseline); }
+  button:hover, select:hover { border-color: var(--line-2); }
+  button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible {
+    outline: 2px solid var(--cyan); outline-offset: 2px;
+  }
+  select option { background: #12111c; color: var(--ink); }
+  input[type="checkbox"] { accent-color: var(--violet); }
+
+  .nav { display: flex; gap: 8px; margin-bottom: 18px; }
+  .nav .tab {
+    text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--muted); background: transparent;
+    border: 1px solid transparent; border-radius: 10px; padding: 7px 14px;
+  }
+  .nav .tab:hover { color: var(--ink); border-color: var(--line); }
+  .nav .tab.active { color: var(--ink); background: var(--panel); border-color: var(--line-2); }
 
   .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 18px;
     padding: 16px 18px;
+    backdrop-filter: blur(10px);
+    position: relative;
+    overflow: hidden;
   }
-  .card h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+  .card::before {  /* frosted top edge highlight */
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+    pointer-events: none;
+  }
+  .card h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .tile .label { font-size: 12px; color: var(--muted); }
-  .tile .value { font-size: 28px; font-weight: 600; margin-top: 2px; }
-  .tile .note  { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 16px; }
+  .tile .label {
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .tile .value { font-size: 30px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile.hero .value {
+    background: linear-gradient(90deg, var(--cyan), var(--violet));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .tile .note { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
   .charts { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.6fr); gap: 16px; margin-bottom: 16px; }
   @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
@@ -85,23 +130,34 @@
   @media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
-       border-bottom: 1px solid var(--grid); padding: 6px 8px; }
-  td { padding: 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th {
+    text-align: left; color: var(--muted); font-weight: 600; font-size: 10px;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    border-bottom: 1px solid var(--line-2); padding: 6px 8px;
+  }
+  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
   tr:last-child td { border-bottom: none; }
-  td.num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-2); }
+  td.num {
+    font-variant-numeric: tabular-nums; text-align: right; color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px;
+  }
   .content-cell { max-width: 520px; overflow-wrap: anywhere; }
-  .dim { opacity: 0.55; }
-  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+  .dim { opacity: 0.5; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
   .badge {
-    display: inline-block; font-size: 11px; border: 1px solid var(--border);
-    border-radius: 999px; padding: 0 8px; color: var(--ink-2); margin-left: 6px;
+    display: inline-block; font-size: 10px; border: 1px solid var(--line-2);
+    border-radius: 999px; padding: 0 8px; color: var(--muted); margin-left: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
-  .task { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  .task { padding: 10px 0; border-bottom: 1px solid var(--line); }
   .task:last-child { border-bottom: none; }
-  .task .t-title { font-weight: 550; }
+  .task .t-title { font-weight: 550; color: var(--ink); }
   .prio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); }
 
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
@@ -109,31 +165,46 @@
 
   #tooltip {
     position: fixed; pointer-events: none; z-index: 10; display: none;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    background: rgba(18, 17, 28, 0.92); border: 1px solid var(--line-2); border-radius: 10px;
+    padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+    backdrop-filter: blur(8px);
     max-width: 280px;
   }
-  #tooltip .tt-title { font-weight: 600; margin-bottom: 2px; }
+  #tooltip .tt-title { font-weight: 600; margin-bottom: 2px; color: var(--ink); }
   #tooltip .tt-row { color: var(--ink-2); }
 
-  #auth {
-    display: none; max-width: 420px; margin: 80px auto; text-align: center;
+  #auth { display: none; max-width: 420px; margin: 80px auto; text-align: center; }
+  #auth h2 {
+    font-size: 17px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 750;
+    background: linear-gradient(90deg, var(--cyan), var(--violet) 55%, var(--rose));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    margin-bottom: 6px; font-family: inherit;
   }
   #auth input {
     font: inherit; width: 100%; margin: 12px 0; padding: 8px 12px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--page); color: var(--ink);
+    border: 1px solid var(--line-2); border-radius: 10px;
+    background: rgba(0,0,0,0.3); color: var(--ink);
   }
   #err { color: var(--status-critical); font-size: 13px; margin-top: 8px; display: none; }
   .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
   svg text { fill: var(--ink-2); font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; }
   svg .tick { fill: var(--muted); font-size: 11px; }
-  svg .val { fill: var(--ink); font-weight: 600; }
+  svg .val {
+    fill: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+  }
+  #graph canvas { display: block; width: 100%; cursor: grab; touch-action: none; }
+  #graph canvas.dragging { cursor: grabbing; }
+
+  @media (prefers-reduced-motion: reduce) {
+    header .live i { animation: none; }
+  }
 </style>
 </head>
 <body>
 <div id="auth" class="card">
-  <h2 style="font-size:16px;color:var(--ink)">Synatyx dashboard</h2>
+  <h2>Synatyx</h2>
   <p style="color:var(--ink-2);font-size:13px">This server requires the admin key to read memory data.</p>
   <input id="key-input" type="password" placeholder="Admin key" autocomplete="off">
   <button id="key-go">Connect</button>
@@ -143,12 +214,20 @@
 <div class="wrap" id="main" style="display:none">
   <header>
     <h1>Synatyx</h1>
-    <span class="sub">memory dashboard</span>
+    <span class="sub">memory core</span>
+    <span class="sub" id="server-info" title="server build"></span>
     <span class="spacer"></span>
-    <span class="sub" id="updated"></span>
+    <span class="sub live"><i></i><span id="updated"></span></span>
     <button id="refresh">Refresh</button>
   </header>
 
+  <nav class="nav">
+    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab" data-view="memories">Recent memories</button>
+    <button class="tab" data-view="indexes">Code indexes</button>
+  </nav>
+
+  <div id="view-overview">
   <div class="tiles" id="tiles"></div>
 
   <div class="charts">
@@ -164,7 +243,7 @@
   </div>
 
   <div class="card" style="margin-bottom:16px">
-    <h2>Memory graph</h2>
+    <h2>Memory graph — 3D · drag rotate · scroll zoom · shift-drag pan · click node to focus · dbl-click reset</h2>
     <div class="controls">
       <label>Collection
         <select id="sel-graph-collection"></select>
@@ -183,9 +262,11 @@
       <span class="key"><span class="swatch" style="background:transparent;border:2px solid var(--ink)"></span>pinned</span>
       <span class="key"><span class="swatch" style="background:transparent;border:1px dashed var(--muted)"></span>deprecated</span>
     </div>
-    <div id="graph" style="touch-action:none"></div>
+    <div id="graph"></div>
   </div>
+  </div><!-- /view-overview -->
 
+  <div id="view-memories" style="display:none">
   <div class="grid2">
     <div class="card">
       <h2>Recent memories</h2>
@@ -227,6 +308,38 @@
       </div>
     </div>
   </div>
+  </div><!-- /view-memories -->
+
+  <div id="view-indexes" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <h2>Code indexes — one collection per project (ctx_&lt;slug&gt;__index)</h2>
+      <div id="indexes"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>Index map — 3D · files by directory · drag rotate · scroll zoom · shift-drag pan · click file to focus + inspect · dbl-click reset</h2>
+      <div class="controls">
+        <label>Project
+          <select id="sel-index"></select>
+        </label>
+        <span class="sub" id="index-graph-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div class="legend" id="index-legend"></div>
+      <div id="index-graph"></div>
+    </div>
+
+    <div class="card">
+      <h2>Chunks</h2>
+      <div class="controls">
+        <label>Filter
+          <input id="chunk-filter" type="text" placeholder="path or symbol…"
+                 style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;width:240px">
+        </label>
+        <span class="sub" id="chunk-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div id="index-chunks"></div>
+    </div>
+  </div><!-- /view-indexes -->
 </div>
 
 <div id="tooltip"></div>
@@ -235,6 +348,8 @@
 "use strict";
 const LAYERS = ["L1", "L2", "L3", "L4"];
 const LAYER_COLOR = { L1: "var(--l1)", L2: "var(--l2)", L3: "var(--l3)", L4: "var(--l4)" };
+/* canvas cannot resolve CSS vars — keep in sync with :root tokens */
+const LAYER_HEX = { L1: "#67e8f9", L2: "#fb7185", L3: "#34d399", L4: "#a78bfa" };
 const LAYER_NAME = { L1: "L1 session", L2: "L2 episodic", L3: "L3 semantic", L4: "L4 preferences" };
 
 const $ = (id) => document.getElementById(id);
@@ -266,31 +381,33 @@ $("key-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ke
 
 /* ── tooltip ── */
 const tt = $("tooltip");
+function showTip(html, clientX, clientY) {
+  tt.innerHTML = html;
+  tt.style.display = "block";
+  const x = Math.min(clientX + 14, window.innerWidth - tt.offsetWidth - 8);
+  const y = Math.min(clientY + 14, window.innerHeight - tt.offsetHeight - 8);
+  tt.style.left = x + "px";
+  tt.style.top = y + "px";
+}
+function hideTip() { tt.style.display = "none"; }
 function bindTooltips(root) {
   root.querySelectorAll("[data-tt]").forEach((el) => {
-    el.addEventListener("mousemove", (e) => {
-      tt.innerHTML = el.dataset.tt;
-      tt.style.display = "block";
-      const x = Math.min(e.clientX + 14, window.innerWidth - tt.offsetWidth - 8);
-      const y = Math.min(e.clientY + 14, window.innerHeight - tt.offsetHeight - 8);
-      tt.style.left = x + "px";
-      tt.style.top = y + "px";
-    });
-    el.addEventListener("mouseleave", () => { tt.style.display = "none"; });
+    el.addEventListener("mousemove", (e) => showTip(el.dataset.tt, e.clientX, e.clientY));
+    el.addEventListener("mouseleave", hideTip);
   });
 }
 
 /* ── stat tiles ── */
 function renderTiles(t) {
   const tiles = [
-    { label: "Total memories", value: t.total, note: t.active + " active" },
+    { label: "Total memories", value: t.total, note: t.active + " active", hero: true },
     { label: "Deprecated", value: t.deprecated },
     { label: "Pinned checkpoints", value: t.pinned },
     { label: "Collections", value: t.collections },
     { label: "Open tasks", value: t.open_tasks },
   ];
   $("tiles").innerHTML = tiles.map((x) => `
-    <div class="card tile">
+    <div class="card tile${x.hero ? " hero" : ""}">
       <div class="label">${esc(x.label)}</div>
       <div class="value">${x.value.toLocaleString()}</div>
       ${x.note ? `<div class="note">${esc(x.note)}</div>` : ""}
@@ -306,7 +423,7 @@ function renderLayerChart(byLayer) {
   const plotW = W - labelW - valueW;
   const H = top + LAYERS.length * (barH + gap);
   let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Active memories by layer">`;
-  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 6}" stroke="var(--baseline)" stroke-width="1"/>`;
+  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 6}" stroke="var(--line-2)" stroke-width="1"/>`;
   LAYERS.forEach((l, i) => {
     const v = byLayer[l] || 0;
     const y = top + i * (barH + gap);
@@ -342,7 +459,7 @@ function renderStackChart(collections) {
   const H = top + rows.length * (barH + gap);
 
   let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Active memories by collection">`;
-  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 4}" stroke="var(--baseline)" stroke-width="1"/>`;
+  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 4}" stroke="var(--line-2)" stroke-width="1"/>`;
   rows.forEach((r, i) => {
     const y = top + i * (barH + gap);
     const name = r.is_user_global ? r.slug + " (global L4)" : r.slug;
@@ -392,7 +509,7 @@ function renderItems(data) {
         (it.is_deprecated ? `<span class="badge">deprecated</span>` : "");
       const meta = [it.user_id, it.session_id, it.origin].filter(Boolean).join(" · ");
       return `<tr class="${it.is_deprecated ? "dim" : ""}">
-        <td><span class="chip"><span class="swatch" style="background:${LAYER_COLOR[it.memory_layer] || "var(--muted)"}"></span>${esc(it.memory_layer)}</span></td>
+        <td><span class="chip" style="color:${LAYER_COLOR[it.memory_layer] || "var(--muted)"}"><span class="swatch" style="background:${LAYER_COLOR[it.memory_layer] || "var(--muted)"}"></span>${esc(it.memory_layer)}</span></td>
         <td class="content-cell">${esc(it.content)}${it.truncated ? "…" : ""}${badges}
           ${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</td>
         <td class="num">${it.importance != null ? Number(it.importance).toFixed(2) : "—"}</td>
@@ -449,57 +566,41 @@ async function loadUsers() {
   }
 }
 
-/* ── memory graph: force-directed layout in plain SVG ──
-   Nodes wear the layer identity colors; deprecated nodes are dashed and
-   dimmed; pinned nodes get a thick ink ring. Edges are hairlines with an
-   arrowhead; hovering an edge names its relation type. Nodes are draggable. */
+/* ── memory graph: 3D perspective point cloud on canvas ──
+   Nodes sit on a flattened sphere (fibonacci distribution, deterministic
+   jitter); relation springs pull linked nodes together in 3D. The cloud
+   auto-orbits; dragging rotates it; hovering pauses the orbit and hit-tests
+   nodes first, then edges, feeding the shared tooltip. Deprecated nodes are
+   dashed outlines, pinned nodes wear a bright ring. */
 const GOLDEN_ANGLE = 2.399963;
 
-function forceLayout(nodes, edges, W, H) {
-  nodes.forEach((n, i) => {
-    const r = 40 + 14 * Math.sqrt(i);
-    n.x = W / 2 + r * Math.cos(i * GOLDEN_ANGLE);
-    n.y = H / 2 + (r * 0.6) * Math.sin(i * GOLDEN_ANGLE);
+function layout3d(nodes, edges) {
+  let seed = 42; /* deterministic: same data → same cloud */
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const R = Math.min(230, 110 + nodes.length * 0.8);
+  const n = Math.max(1, nodes.length);
+  nodes.forEach((p, i) => {
+    const phi = Math.acos(1 - 2 * ((i + 0.5) / n));
+    const theta = i * GOLDEN_ANGLE;
+    const rr = R * (0.55 + 0.45 * rnd());
+    p.x = rr * Math.sin(phi) * Math.cos(theta);
+    p.y = rr * Math.cos(phi) * 0.55;
+    p.z = rr * Math.sin(phi) * Math.sin(theta);
   });
-  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const byId = new Map(nodes.map((p) => [p.id, p]));
   const springs = edges
     .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target) }))
     .filter((s) => s.a && s.b);
-  const ITER = 260;
-  for (let it = 0; it < ITER; it++) {
-    const cool = 1 - it / ITER;
-    nodes.forEach((n) => { n.vx = 0; n.vy = 0; });
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        const d2 = dx * dx + dy * dy || 0.01;
-        const f = 2600 / d2;
-        const d = Math.sqrt(d2);
-        dx /= d; dy /= d;
-        a.vx += dx * f; a.vy += dy * f;
-        b.vx -= dx * f; b.vy -= dy * f;
-      }
-    }
+  for (let it = 0; it < 80; it++) {
     springs.forEach(({ a, b }) => {
-      let dx = b.x - a.x, dy = b.y - a.y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const f = (d - 90) * 0.06;
-      dx /= d; dy /= d;
-      a.vx += dx * f * d; a.vy += dy * f * d;
-      b.vx -= dx * f * d; b.vy -= dy * f * d;
-    });
-    nodes.forEach((n) => {
-      n.vx += (W / 2 - n.x) * 0.012;
-      n.vy += (H / 2 - n.y) * 0.02;
-      const step = 0.04 * cool;
-      n.x += Math.max(-14, Math.min(14, n.vx * step));
-      n.y += Math.max(-14, Math.min(14, n.vy * step));
-      const m = 16;
-      n.x = Math.max(m, Math.min(W - m, n.x));
-      n.y = Math.max(m, Math.min(H - m, n.y));
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+      const f = (d - 70) * 0.02 / d;
+      a.x += dx * f; a.y += dy * f; a.z += dz * f;
+      b.x -= dx * f; b.y -= dy * f; b.z -= dz * f;
     });
   }
+  return R;
 }
 
 function nodeTip(n) {
@@ -510,80 +611,279 @@ function nodeTip(n) {
     `<div class='tt-row'>${esc(n.user_id || "")}${flags ? " · " + flags : ""}</div>`;
 }
 
-function renderGraph(data) {
+/* Shared 3D point-cloud renderer — memory graph and code-index graph both
+   use it; opts carries the per-graph identity (colors, tooltips, targets). */
+function render3D(data, opts) {
+  const box = opts.box;
+  if (box._anim) { cancelAnimationFrame(box._anim); box._anim = null; }
   let nodes = data.nodes.map((n) => ({ ...n }));
   let edges = data.edges;
-  if ($("chk-connected").checked) {
+  if (opts.onlyConnected && opts.onlyConnected()) {
     const linked = new Set();
     edges.forEach((e) => { linked.add(e.source); linked.add(e.target); });
     nodes = nodes.filter((n) => linked.has(n.id));
   }
-  $("graph-stats").textContent = `${nodes.length} nodes · ${edges.length} relations`;
+  if (opts.statsEl) opts.statsEl.textContent =
+    `${nodes.length} nodes · ${edges.length} ${opts.edgeWord || "relations"}`;
   if (!nodes.length) {
-    $("graph").innerHTML = `<div class="empty">Nothing to draw${$("chk-connected").checked ? " — no relation edges in this collection yet" : ""}.</div>`;
+    box.innerHTML = `<div class="empty">Nothing to draw.</div>`;
     return;
   }
 
-  const W = 1100, H = Math.max(320, Math.min(560, 130 + nodes.length * 3));
-  forceLayout(nodes, edges, W, H);
+  layout3d(nodes, edges);
+  /* actual cloud extent — the spring pass contracts nodes well inside the
+     nominal layout radius, so fit and rings must measure, not assume */
+  const cloudR = nodes.reduce((m, n) => Math.max(m, Math.hypot(n.x, n.y, n.z)), 1);
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const idxById = new Map(nodes.map((n, i) => [n.id, i]));
+  const links = edges
+    .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target), type: e.type }))
+    .filter((l) => l.a && l.b);
 
-  let s = `<svg id="graph-svg" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Memory relation graph">
-    <defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L8,4 L0,8 z" fill="var(--baseline)"/></marker></defs><g id="edges">`;
-  edges.forEach((e, i) => {
-    const a = byId.get(e.source), b = byId.get(e.target);
-    if (!a || !b) return;
-    const tip = `<div class='tt-title'>${esc(e.type)}</div><div class='tt-row'>${esc(a.label.slice(0, 60))}</div><div class='tt-row'>→ ${esc(b.label.slice(0, 60))}</div>`;
-    s += `<line data-edge="${i}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
-      stroke="var(--baseline)" stroke-width="1" marker-end="url(#arrow)"/>
-      <line data-edge-hit="${i}" data-tt="${esc(tip)}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
-      stroke="transparent" stroke-width="10"/>`;
-  });
-  s += `</g><g id="nodes">`;
+  /* per-node drift — tiny phase-shifted orbits keep the cloud alive */
   nodes.forEach((n) => {
-    const r = 6 + (Number(n.importance) || 0.5) * 6;
-    const fill = LAYER_COLOR[n.memory_layer] || "var(--muted)";
-    const style = n.is_deprecated
-      ? `fill="${fill}" fill-opacity="0.25" stroke="var(--muted)" stroke-dasharray="3 2" stroke-width="1.5"`
-      : n.is_pinned
-        ? `fill="${fill}" stroke="var(--ink)" stroke-width="2.5"`
-        : `fill="${fill}" stroke="var(--surface)" stroke-width="2"`;
-    s += `<circle data-node="${esc(n.id)}" data-tt="${esc(nodeTip(n))}" cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r.toFixed(1)}" ${style} style="cursor:grab"/>`;
+    n._ph = Math.random() * Math.PI * 2;
+    n._ph2 = Math.random() * Math.PI * 2;
+    n._amp = 2 + Math.random() * 3.5;
   });
-  s += `</g></svg>`;
-  $("graph").innerHTML = s;
-  bindTooltips($("graph"));
 
-  /* drag: move a node and every edge that touches it */
-  const svg = $("graph").querySelector("#graph-svg");
-  let drag = null;
-  const toSvg = (evt) => {
-    const rect = svg.getBoundingClientRect();
-    return { x: (evt.clientX - rect.left) * W / rect.width, y: (evt.clientY - rect.top) * H / rect.height };
+  /* adjacency for selection highlighting */
+  const adj = new Map();
+  const addAdj = (a, b) => { if (!adj.has(a)) adj.set(a, new Set()); adj.get(a).add(b); };
+  links.forEach((l) => { addAdj(l.a.id, l.b.id); addAdj(l.b.id, l.a.id); });
+
+  box.innerHTML = "";
+  const canvas = document.createElement("canvas");
+  box.appendChild(canvas);
+  const ctx = canvas.getContext("2d");
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const CSS_H = Math.max(340, Math.min(560, 180 + nodes.length * 1.4));
+  const HIGHLIGHT = opts.highlight || "#67e8f9";
+
+  let yaw = 0.6, pitch = 0.26, zoom = 1, panX = 0, panY = 0;
+  let baseZoom = 1, userZoomed = false;
+  let dragging = null, hovering = false, selectedId = null;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let proj = [];
+
+  const wob = (n, t) => reduced ? n : {
+    x: n.x + Math.sin(t * 0.7 + n._ph) * n._amp,
+    y: n.y + Math.cos(t * 0.9 + n._ph2) * n._amp,
+    z: n.z + Math.sin(t * 0.8 + n._ph + n._ph2) * n._amp,
   };
-  svg.querySelectorAll("[data-node]").forEach((c) => {
-    c.addEventListener("pointerdown", (evt) => {
-      drag = { circle: c, id: c.dataset.node };
-      c.setPointerCapture(evt.pointerId);
-      evt.preventDefault();
+
+  function project(p, W, H) {
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    let x = p.x * cy + p.z * sy;
+    let z = -p.x * sy + p.z * cy;
+    let y = p.y * cp - z * sp;
+    z = p.y * sp + z * cp;
+    const f = 460 / (460 + z);
+    /* f drives radius (zoom-scaled); d drives depth alpha (zoom-independent) */
+    return { x: W / 2 + panX + x * f * zoom, y: H / 2 + panY + y * f * zoom, f: f * zoom, d: f, z };
+  }
+
+  function draw() {
+    const W = canvas.width / DPR, H = canvas.height / DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    /* wireframe orbit rings ground the cloud in space */
+    ctx.strokeStyle = "rgba(167,139,250,0.16)";
+    ctx.lineWidth = 1;
+    for (const ringR of [cloudR * 0.62, cloudR * 0.92, cloudR * 1.18]) {
+      ctx.beginPath();
+      for (let a = 0; a <= 72; a++) {
+        const ang = (a / 72) * Math.PI * 2;
+        const q = project({ x: ringR * Math.cos(ang), y: 0, z: ringR * Math.sin(ang) }, W, H);
+        a === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y);
+      }
+      ctx.stroke();
+    }
+
+    const t = performance.now() / 1000;
+    proj = nodes.map((n) => project(wob(n, t), W, H));
+
+    const neighbors = selectedId ? (adj.get(selectedId) || new Set()) : null;
+
+    links.forEach((l) => {
+      const A = proj[idxById.get(l.a.id)], B = proj[idxById.get(l.b.id)];
+      l.px = A; l.py = B;
+      const touching = selectedId && (l.a.id === selectedId || l.b.id === selectedId);
+      let alpha = 0.18 + 0.35 * (A.d + B.d) / 2;
+      if (selectedId) alpha = touching ? 0.85 : alpha * 0.12;
+      ctx.strokeStyle = touching
+        ? `rgba(103,232,249,${alpha.toFixed(2)})`
+        : `rgba(167,139,250,${alpha.toFixed(2)})`;
+      ctx.lineWidth = touching ? 1.8 : 1;
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
     });
-  });
-  svg.addEventListener("pointermove", (evt) => {
-    if (!drag) return;
-    const p = toSvg(evt);
-    drag.circle.setAttribute("cx", p.x.toFixed(1));
-    drag.circle.setAttribute("cy", p.y.toFixed(1));
-    edges.forEach((e, i) => {
-      if (e.source !== drag.id && e.target !== drag.id) return;
-      const end = e.source === drag.id ? "1" : "2";
-      svg.querySelectorAll(`[data-edge="${i}"], [data-edge-hit="${i}"]`).forEach((line) => {
-        line.setAttribute("x" + end, p.x.toFixed(1));
-        line.setAttribute("y" + end, p.y.toFixed(1));
-      });
+
+    /* far-to-near so close nodes draw on top */
+    const order = nodes.map((_, i) => i).sort((a, b) => proj[b].z - proj[a].z);
+    for (const i of order) {
+      const n = nodes[i], q = proj[i];
+      const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f;
+      let depth = Math.max(0.25, Math.min(1, q.d * q.d));
+      /* focus mode: everything outside the selected node + neighbors recedes */
+      if (selectedId && n.id !== selectedId && !(neighbors && neighbors.has(n.id))) {
+        depth *= 0.22;
+      }
+      const c = opts.color(n);
+      if (n.is_deprecated) {
+        ctx.setLineDash([3, 2]);
+        ctx.strokeStyle = `rgba(139,144,166,${(0.7 * depth).toFixed(2)})`;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
+      ctx.shadowColor = c;
+      ctx.shadowBlur = 10 * depth;
+      ctx.globalAlpha = depth;
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill();
+      if (n.is_pinned) {
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "#f1f2fa"; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(q.x, q.y, r + 2.4, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (n.id === selectedId) {
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+        ctx.strokeStyle = HIGHLIGHT; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(q.x, q.y, r + 3.5, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    }
+  }
+
+  function resize() {
+    const w = box.clientWidth || 1100;
+    canvas.width = w * DPR; canvas.height = CSS_H * DPR;
+    canvas.style.height = CSS_H + "px";
+    /* fit the cloud to the canvas — R is the layout sphere radius, which
+       projects to ≈R px at z=0, so scale it to ~84% of the short side */
+    baseZoom = Math.max(0.4, Math.min(3.5, (Math.min(w, CSS_H) * 0.42) / cloudR));
+    if (!userZoomed) zoom = baseZoom;
+    draw();
+  }
+
+  function tick() {
+    if (box.offsetParent !== null) {  /* skip drawing while the tab is hidden */
+      /* pause auto-orbit while focused on a node — spinning fights inspection */
+      if (!dragging && !hovering && !reduced && !selectedId) yaw += 0.0032;
+      draw();
+    }
+    box._anim = requestAnimationFrame(tick);
+  }
+
+  const toLocal = (evt) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+  };
+  const distToSeg = (p, a, b) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  };
+
+  function nodeAt(p) {
+    let hit = null, hitD = Infinity;
+    nodes.forEach((n, i) => {
+      const q = proj[i];
+      if (!q) return;
+      const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
+      if (Math.hypot(p.x - q.x, p.y - q.y) < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
     });
+    return hit;
+  }
+
+  canvas.addEventListener("pointerdown", (evt) => {
+    dragging = {
+      x: evt.clientX, y: evt.clientY, yaw, pitch, panX, panY,
+      mode: evt.shiftKey ? "pan" : "rotate",
+    };
+    canvas.setPointerCapture(evt.pointerId);
+    canvas.classList.add("dragging");
+    hideTip();
+    evt.preventDefault();
   });
-  svg.addEventListener("pointerup", () => { drag = null; });
+  canvas.addEventListener("pointerup", (evt) => {
+    /* a press that barely moved is a click: select + highlight relations */
+    if (dragging && Math.hypot(evt.clientX - dragging.x, evt.clientY - dragging.y) < 5) {
+      const hit = nodeAt(toLocal(evt));
+      selectedId = hit && hit.id !== selectedId ? hit.id : null;
+      if (hit && opts.onClick) opts.onClick(hit);
+      if (reduced) draw();
+    }
+  });
+  canvas.addEventListener("dblclick", () => {
+    yaw = 0.6; pitch = 0.26; zoom = baseZoom; userZoomed = false;
+    panX = 0; panY = 0; selectedId = null;
+    if (reduced) draw();
+  });
+  canvas.addEventListener("wheel", (evt) => {
+    evt.preventDefault();
+    const p = toLocal(evt);
+    const W = canvas.width / DPR, H = canvas.height / DPR;
+    userZoomed = true;
+    const next = Math.max(0.25, Math.min(6, zoom * Math.exp(-evt.deltaY * 0.0014)));
+    /* keep the point under the cursor fixed while zooming */
+    const scale = next / zoom;
+    panX = (p.x - W / 2) - ((p.x - W / 2) - panX) * scale;
+    panY = (p.y - H / 2) - ((p.y - H / 2) - panY) * scale;
+    zoom = next;
+    if (reduced) draw();
+  }, { passive: false });
+  canvas.addEventListener("pointermove", (evt) => {
+    if (dragging) {
+      if (dragging.mode === "pan") {
+        panX = dragging.panX + (evt.clientX - dragging.x);
+        panY = dragging.panY + (evt.clientY - dragging.y);
+      } else {
+        yaw = dragging.yaw + (evt.clientX - dragging.x) * 0.006;
+        pitch = Math.max(-1.25, Math.min(1.25, dragging.pitch + (evt.clientY - dragging.y) * 0.006));
+      }
+      if (reduced) draw();
+      return;
+    }
+    /* hover: nodes first (nearest projected hit), then relation edges */
+    const p = toLocal(evt);
+    const hit = nodeAt(p);
+    if (hit) {
+      hovering = true;
+      showTip(opts.tip(hit), evt.clientX, evt.clientY);
+      return;
+    }
+    const edge = links.find((l) => l.px && distToSeg(p, l.px, l.py) < 6);
+    if (edge) {
+      hovering = true;
+      showTip(`<div class='tt-title'>${esc(edge.type)}</div>` +
+        `<div class='tt-row'>${esc(edge.a.label.slice(0, 60))}</div>` +
+        `<div class='tt-row'>→ ${esc(edge.b.label.slice(0, 60))}</div>`, evt.clientX, evt.clientY);
+      return;
+    }
+    hovering = false;
+    hideTip();
+  });
+  canvas.addEventListener("pointerup", () => { dragging = null; canvas.classList.remove("dragging"); });
+  canvas.addEventListener("pointerleave", () => { hovering = false; hideTip(); });
+  window.addEventListener("resize", resize);
+
+  resize();
+  if (reduced) draw(); else tick();
+}
+
+function renderGraph(data) {
+  render3D(data, {
+    box: $("graph"),
+    statsEl: $("graph-stats"),
+    edgeWord: "relations",
+    onlyConnected: () => $("chk-connected").checked,
+    color: (n) => LAYER_HEX[n.memory_layer] || "#8b90a6",
+    tip: nodeTip,
+  });
 }
 
 async function loadGraph() {
@@ -596,6 +896,96 @@ async function loadGraph() {
   } catch (e) {
     if (e.message !== "unauthorized") $("graph").innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
   }
+}
+
+/* ── code-index graph + chunks ── */
+const LANG_COLORS = ["#67e8f9", "#34d399", "#a78bfa", "#fbbf24", "#fb7185", "#f472b6", "#94a3b8"];
+let langColorMap = {};
+
+function codeNodeColor(n) {
+  if (n.kind === "project") return "#f1f2fa";
+  if (n.kind === "dir") return "#8b90a6";
+  return langColorMap[n.language] || "#8b90a6";
+}
+
+function codeNodeTip(n) {
+  if (n.kind === "file") {
+    return `<div class='tt-title'>${esc(n.label)}</div>` +
+      `<div class='tt-row'>${esc(n.language)} · ${n.chunks} chunk${n.chunks === 1 ? "" : "s"}</div>` +
+      `<div class='tt-row dim'>click to inspect chunks</div>`;
+  }
+  return `<div class='tt-title'>${esc(n.label)}</div><div class='tt-row'>${esc(n.kind)}</div>`;
+}
+
+async function loadIndexGraph() {
+  const collection = $("sel-index").value;
+  const box = $("index-graph");
+  if (!collection) { box.innerHTML = `<div class="empty">No code indexes yet.</div>`; return; }
+  let data;
+  try {
+    data = await api("/dashboard/api/index_graph?" + new URLSearchParams({ collection }));
+  } catch (e) {
+    if (e.message !== "unauthorized") box.innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
+    return;
+  }
+  /* stable language → color assignment, most common language first */
+  const counts = {};
+  data.nodes.forEach((n) => { if (n.kind === "file") counts[n.language] = (counts[n.language] || 0) + 1; });
+  langColorMap = {};
+  Object.keys(counts).sort((a, b) => counts[b] - counts[a])
+    .forEach((lang, i) => { langColorMap[lang] = LANG_COLORS[i % LANG_COLORS.length]; });
+  $("index-legend").innerHTML = Object.keys(langColorMap)
+    .map((lang) => `<span class="key"><span class="swatch" style="background:${langColorMap[lang]}"></span>${esc(lang)}</span>`)
+    .join("") +
+    `<span class="key"><span class="swatch" style="background:#8b90a6"></span>directory</span>`;
+  render3D(data, {
+    box,
+    statsEl: $("index-graph-stats"),
+    edgeWord: "links",
+    color: codeNodeColor,
+    tip: codeNodeTip,
+    onClick: (n) => {
+      if (n.kind !== "file") return;
+      $("chunk-filter").value = n.label;
+      loadIndexChunks();
+    },
+  });
+}
+
+async function loadIndexChunks() {
+  const collection = $("sel-index").value;
+  const el = $("index-chunks");
+  if (!collection) { el.innerHTML = ""; return; }
+  const params = new URLSearchParams({ collection, limit: "100" });
+  const q = $("chunk-filter").value.trim();
+  if (q) params.set("q", q);
+  let data;
+  try {
+    data = await api("/dashboard/api/index_chunks?" + params);
+  } catch (e) {
+    if (e.message !== "unauthorized") el.innerHTML = `<div class="empty">Failed to load chunks (${esc(e.message)}).</div>`;
+    return;
+  }
+  $("chunk-stats").textContent = data.count < data.total
+    ? `${data.count} of ${data.total} chunks` : `${data.total} chunks`;
+  if (!data.chunks.length) {
+    el.innerHTML = `<div class="empty">No chunks match.</div>`;
+    return;
+  }
+  el.innerHTML =
+    '<table><thead><tr><th>Path</th><th>Symbol</th><th>Kind</th>' +
+    '<th class="num">Lines</th><th>Preview</th></tr></thead><tbody>' +
+    data.chunks.map((c) => {
+      const lines = c.line_start ? `${c.line_start}–${c.line_end || "?"}` : "—";
+      const idx = c.chunk_total > 1 ? `<span class="badge">${c.chunk_index + 1}/${c.chunk_total}</span>` : "";
+      return `<tr>
+        <td class="mono" style="font-size:12px">${esc(c.path)}${idx}</td>
+        <td class="mono" style="font-size:12px">${esc(c.symbol || "—")}</td>
+        <td>${esc(c.kind || "—")}</td>
+        <td class="num">${lines}</td>
+        <td class="content-cell mono dim" style="font-size:11px">${esc(c.preview)}${c.preview.length >= 220 ? "…" : ""}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
 }
 
 /* ── tasks ── */
@@ -675,9 +1065,70 @@ async function boot() {
     else if (biggest) sel.value = biggest.collection;
   }
 
-  $("updated").textContent = "updated " + new Date().toLocaleTimeString();
-  await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph()]);
+  const srv = overview.server;
+  if (srv) {
+    $("server-info").textContent =
+      "v" + srv.version + " · " + srv.tools + " tools · " + srv.commit;
+  }
+  $("updated").textContent = "synced " + new Date().toLocaleTimeString();
+  await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph(), loadIndexes()]);
+  await Promise.all([loadIndexGraph(), loadIndexChunks()]);
 }
+
+async function loadIndexes() {
+  const el = $("indexes");
+  let data;
+  try {
+    data = await api("/dashboard/api/indexes");
+  } catch {
+    el.innerHTML = '<div class="empty">Could not load index stats.</div>';
+    return;
+  }
+  /* keep the project selector in sync (preserve the current choice) */
+  const sel = $("sel-index");
+  const prev = sel.value;
+  sel.innerHTML = data.indexes.map((ix) =>
+    `<option value="${esc(ix.collection)}">${esc(ix.project)} (${ix.files} files)</option>`).join("");
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+
+  if (!data.indexes.length) {
+    el.innerHTML = '<div class="empty">No code indexes yet — run <span class="mono">context_index</span>, ' +
+      'push with <span class="mono">scripts/index_project.py</span>, or install the Synatyx Indexer extension.</div>';
+    return;
+  }
+  el.innerHTML =
+    '<table><thead><tr><th>Project</th><th class="num">Files</th><th class="num">Chunks</th>' +
+    '<th>Languages</th><th>Users</th><th class="num">Last indexed</th></tr></thead><tbody>' +
+    data.indexes.map((ix) => {
+      const langs = Object.entries(ix.by_language)
+        .map(([l, n]) => `<span class="chip">${esc(l)}&nbsp;<span class="dim">${n}</span></span>`)
+        .join(" · ") || "—";
+      const when = ix.last_indexed_at
+        ? esc(ix.last_indexed_at.slice(0, 19).replace("T", " ")) + " UTC" : "—";
+      return `<tr>
+        <td>${esc(ix.project)}<div class="meta mono">${esc(ix.collection)}</div></td>
+        <td class="num">${ix.files}</td>
+        <td class="num">${ix.chunks}</td>
+        <td>${langs}</td>
+        <td>${ix.users.map(esc).join(", ") || "—"}</td>
+        <td class="num">${when}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
+}
+
+/* ── view tabs ─────────────────────────────────────────────────────────── */
+const VIEWS = ["overview", "memories", "indexes"];
+function showView(name) {
+  for (const v of VIEWS) $("view-" + v).style.display = v === name ? "" : "none";
+  document.querySelectorAll(".nav .tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === name));
+  sessionStorage.setItem("synatyx_view", name);
+  // the 3D graph canvas sizes from its container — re-measure when revealed
+  if (name === "overview") window.dispatchEvent(new Event("resize"));
+}
+document.querySelectorAll(".nav .tab").forEach((btn) =>
+  btn.addEventListener("click", () => showView(btn.dataset.view)));
+showView(sessionStorage.getItem("synatyx_view") || "overview");
 
 $("refresh").addEventListener("click", boot);
 $("sel-collection").addEventListener("change", () => {
@@ -693,6 +1144,15 @@ $("sel-graph-collection").addEventListener("change", () => {
 $("sel-layer").addEventListener("change", loadItems);
 $("sel-user").addEventListener("change", () => { selectedUser = $("sel-user").value; loadItems(); loadUsers(); });
 $("sel-graph-user").addEventListener("change", loadGraph);
+$("sel-index").addEventListener("change", () => {
+  $("chunk-filter").value = "";
+  loadIndexGraph(); loadIndexChunks();
+});
+let chunkFilterTimer = null;
+$("chunk-filter").addEventListener("input", () => {
+  clearTimeout(chunkFilterTimer);
+  chunkFilterTimer = setTimeout(loadIndexChunks, 300);
+});
 $("chk-deprecated").addEventListener("change", loadItems);
 $("chk-connected").addEventListener("change", loadGraph);
 $("sel-status").addEventListener("change", loadTasks);

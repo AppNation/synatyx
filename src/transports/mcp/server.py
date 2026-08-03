@@ -49,6 +49,8 @@ class SynatyxMCPServer:
         self._svc_cache: dict[str, tuple[RetrieveService, StoreService, IngestService]] = {}
         self._budget = BudgetManager()
         self._skill_svc_cache: dict[str, SkillService] = {}
+        self._pack_svc_cache: dict[str, Any] = {}
+        self._index_svc_cache: dict[str, Any] = {}
         self._tracker = SessionTracker(redis, settings.tracking)
         self._register_handlers()
 
@@ -59,6 +61,67 @@ class SynatyxMCPServer:
         if key not in self._skill_svc_cache:
             self._skill_svc_cache[key] = SkillService(storage, self._postgres)
         return self._skill_svc_cache[key]
+
+    async def _get_pack_service(self, user_id: str, project: str | None = None):
+        """Return a PackService backed by the active project's collection.
+
+        Invalidated by context_index so a freshly built code index is picked
+        up on the next pack call."""
+        from src.core.pack import PackService
+
+        storage, retrieve, _, _, _ = await self._get_services(user_id, project)
+        key = storage.collection_name
+        if key not in self._pack_svc_cache:
+            l4_storage = await self._project_manager.get_l4_storage()
+            relations = RelationService(self._postgres, storage, l4_storage)
+            skills = SkillService(storage, self._postgres)
+            index_search = await self._maybe_index_search(storage)
+            self._pack_svc_cache[key] = PackService(
+                retrieve, storage, l4_storage, self._postgres,
+                relations, skills, index_search,
+            )
+        return self._pack_svc_cache[key]
+
+    async def _maybe_index_search(self, storage: QdrantStorage):
+        """Return an IndexSearchService when the project has an index
+        collection, else None."""
+        from src.core.index import IndexSearchService
+        from src.core.project import index_collection_for
+
+        slug = storage.project_slug
+        if not slug:
+            return None
+        index_collection = index_collection_for(slug)
+        try:
+            collections = await storage.get_all_collections()
+        except Exception:
+            return None
+        if index_collection not in collections:
+            return None
+        return IndexSearchService(storage.scoped(index_collection))
+
+    async def _get_index_services(self, user_id: str, project: str | None = None):
+        """Return (IndexService, IndexSearchService) for the project's code/doc
+        index collection. Requires a resolvable project — indexing into a
+        default collection would orphan chunks on project rename."""
+        from src.core.index import IndexSearchService, IndexService
+
+        if project:
+            slug = project
+        else:
+            slug = await self._project_manager.get_project(user_id)
+        if not slug:
+            raise ValueError(
+                "context_index requires a project — call context_set_project "
+                "first or pass the project argument."
+            )
+        if slug not in self._index_svc_cache:
+            storage = await self._project_manager.get_index_storage(slug)
+            self._index_svc_cache[slug] = (
+                IndexService(storage, slug),
+                IndexSearchService(storage),
+            )
+        return self._index_svc_cache[slug]
 
     async def _get_relation_service(
         self, user_id: str, project: str | None = None
@@ -187,6 +250,139 @@ class SynatyxMCPServer:
             await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
             return [TextContent(type="text", text=json.dumps(result, default=str))]
 
+        self._register_resources()
+        self._register_prompts()
+
+    def _register_resources(self) -> None:
+        """Proactive context: clients that speak MCP resources can pull the
+        session brief without any tool-call discipline. Identity comes from
+        settings.default_user_id (resources carry no user_id argument)."""
+        from mcp.types import Resource
+        from pydantic import AnyUrl
+
+        @self._server.list_resources()
+        async def list_resources() -> list[Resource]:
+            return [
+                Resource(
+                    uri=AnyUrl("context://brief"),
+                    name="Session brief",
+                    description=(
+                        "Token-budgeted session-start digest for the default "
+                        "user's active project: identity, project knowledge, "
+                        "recent changes, attempts, open tasks."
+                    ),
+                    mimeType="application/json",
+                ),
+                Resource(
+                    uri=AnyUrl("context://projects"),
+                    name="Projects",
+                    description="Known project collections and the active project.",
+                    mimeType="application/json",
+                ),
+            ]
+
+        @self._server.read_resource()
+        async def read_resource(uri: Any) -> str:
+            import json
+
+            user_id = settings.default_user_id
+            try:
+                if str(uri) == "context://brief":
+                    result = await self._dispatch("context_brief", {"user_id": user_id})
+                elif str(uri) == "context://projects":
+                    from src.core.project import is_index_collection
+                    active = await self._project_manager.get_project(user_id)
+                    collections = [
+                        c for c in await self._default_qdrant.get_all_collections()
+                        if c.startswith("ctx_") and not is_index_collection(c)
+                    ]
+                    result = {"active_project": active, "collections": sorted(collections)}
+                else:
+                    result = {"error": f"unknown resource {uri}"}
+            except Exception as exc:
+                logger.exception("Resource read failed for %s", uri)
+                result = {"error": str(exc)}
+            return json.dumps(result, default=str)
+
+    def _register_prompts(self) -> None:
+        """Prompts render the brief/pack as ready-to-inject messages."""
+        from mcp.types import (
+            GetPromptResult,
+            Prompt,
+            PromptArgument,
+            PromptMessage,
+        )
+
+        @self._server.list_prompts()
+        async def list_prompts() -> list[Prompt]:
+            return [
+                Prompt(
+                    name="session-start",
+                    description=(
+                        "Session-start context digest for a project — inject "
+                        "at the top of a new conversation."
+                    ),
+                    arguments=[
+                        PromptArgument(
+                            name="project",
+                            description="Project slug (optional — defaults to the active project)",
+                            required=False,
+                        ),
+                    ],
+                ),
+                Prompt(
+                    name="pack-context",
+                    description=(
+                        "Assembled, token-budgeted context block for a specific "
+                        "task, with provenance markers."
+                    ),
+                    arguments=[
+                        PromptArgument(name="query", description="The task to pack context for", required=True),
+                        PromptArgument(name="project", description="Project slug (optional)", required=False),
+                        PromptArgument(name="max_tokens", description="Token budget (default 3000)", required=False),
+                    ],
+                ),
+            ]
+
+        @self._server.get_prompt()
+        async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+            import json
+
+            args = arguments or {}
+            user_id = settings.default_user_id
+            try:
+                if name == "session-start":
+                    call: dict[str, Any] = {"user_id": user_id}
+                    if args.get("project"):
+                        call["project"] = args["project"]
+                    brief = await self._dispatch("context_brief", call)
+                    text = (
+                        "Context from Synatyx memory (session brief):\n\n"
+                        + json.dumps(brief, indent=2, default=str)
+                    )
+                elif name == "pack-context":
+                    call = {"user_id": user_id, "query": args.get("query", "")}
+                    if args.get("project"):
+                        call["project"] = args["project"]
+                    if args.get("max_tokens"):
+                        call["max_tokens"] = int(args["max_tokens"])
+                    packed = await self._dispatch("context_pack", call)
+                    text = packed.get("rendered", "") or "(no context matched)"
+                else:
+                    text = f"Unknown prompt: {name}"
+            except Exception as exc:
+                logger.exception("Prompt %r failed", name)
+                text = f"Context unavailable: {exc}"
+            return GetPromptResult(
+                description=f"Synatyx {name}",
+                messages=[
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(type="text", text=text),
+                    )
+                ],
+            )
+
     async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         user_id = args.get("user_id", "")
 
@@ -251,6 +447,50 @@ class SynatyxMCPServer:
                 "project": slug,
                 "collection": storage.collection_name,
                 **brief_result,
+                **_warn,
+            }
+
+        elif name == "context_pack":
+            pack_svc = await self._get_pack_service(user_id, args.get("project"))
+            pack_result = await pack_svc.pack(
+                user_id=user_id,
+                query=args["query"],
+                project=args.get("project"),
+                session_id=args.get("session_id"),
+                max_tokens=args.get("max_tokens", 3000),
+                include_code=args.get("include_code", True),
+            )
+            return {**pack_result, **_warn}
+
+        elif name == "context_index":
+            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
+            index_result = await index_svc.index(
+                source=args["source"],
+                user_id=user_id,
+                force=args.get("force", False),
+                max_files=args.get("max_files", 500),
+            )
+            # A fresh index must be visible to the next context_pack call
+            self._pack_svc_cache.pop(storage.collection_name, None)
+            return {**index_result.to_dict(), **_warn}
+
+        elif name == "context_index_search":
+            _, index_search = await self._get_index_services(user_id, args.get("project"))
+            hits = await index_search.search(
+                query=args["query"],
+                user_id=user_id,
+                top_k=args.get("top_k", 5),
+                language=args.get("language"),
+                path_prefix=args.get("path_prefix"),
+            )
+            return {"query": args["query"], "hits": hits, "count": len(hits), **_warn}
+
+        elif name == "context_index_status":
+            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
+            return {
+                **await index_svc.status(
+                    user_id, check_staleness=args.get("check_staleness", True)
+                ),
                 **_warn,
             }
 

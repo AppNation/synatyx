@@ -1,5 +1,47 @@
 # Changelog
 
+## [v0.2.0] — 2026-08-03
+
+### 📦 Context Engine
+
+From memory server to context engine: Synatyx now assembles context, not just stores it.
+
+#### `context_pack` — task-driven context assembly
+- One call: the task you're about to do + a token budget → a prompt-ready block of relevant memories (+1-hop relations), pinned checkpoints, dead-end attempts, open tasks, matching skills, and code-index hits
+- Unified section budgeting (`SectionBudgeter`): weight renormalization for absent sections, spillover reallocation of unspent budget
+- `rendered` markdown carries provenance (`[user-stated]`) and staleness (`[STALE: …]`) markers
+
+#### 🗂️ Persistent code & doc index — `context_index`, `context_index_search`, `context_index_status`
+- Per-project `ctx_<slug>__index` collection, isolated from memories by construction (GC, consolidation, observer, and dashboard skip it)
+- Idempotent indexing: deterministic uuid5 point ids, whole-file hash skip, chunk-level incremental re-embedding, stale-chunk sweep, vanished-file cleanup
+- `.gitignore`-aware directory walking (`git ls-files`), binary/lockfile/oversize skips
+- Hybrid search: dense + exact-symbol + full-text passes fused with BM25 — exact identifiers hit even when embeddings miss
+- Verbatim code storage: bypasses the memory sanitizer and 600-char re-chunking
+
+#### 🔌 Proactive context — MCP resources & prompts
+- Resources: `context://brief`, `context://projects`
+- Prompts: `session-start`, `pack-context` (arguments supported)
+- Identity via `DEFAULT_USER_ID` (falls back to OS user)
+
+#### 🚀 Streamable-HTTP transport
+- Modern endpoint at `/mcp` with `stateless_http=True` — deploy restarts no longer strand clients on dead session ids (the SSE `-32602` problem)
+- Legacy SSE stays mounted at `/mcp/sse` (deprecated)
+
+#### 🤖 Automatic indexing
+- **Push indexing** for repos the server can't read: `POST /index/diff` (hash manifest → what changed) + `POST /index/files` (upload changed content, prune deletions), driven by stdlib-only `scripts/index_project.py` — hook-safe for git post-commit / Claude Code SessionStart / cron
+- **Watch roots** for mounted code: `INDEX_WATCH_ROOTS` makes the GC daemon discover and re-index projects on an interval (git repo root = one project; workspace dir = one project per subdir)
+- Server build info surfaced on `/health` and the dashboard header (`v0.2.0 · 31 tools · <commit>`); `GIT_COMMIT` baked in at Docker build
+
+#### 🧰 Fixes & maintenance
+- Qdrant payload indexes on every hot filter field (previously all filters were unindexed)
+- `search()` now restores `created_at`, making the recency scoring signal real
+- `CodeParser` no longer duplicates nested defs; emits `kind` + `line_end`
+- `Makefile` `run`/`logs` fixed (referenced a nonexistent compose service)
+- `docs/mcp-tools.md` is now generated from `tools.json` (`scripts/gen_tool_docs.py`)
+- 31 MCP tools total
+
+---
+
 ## [v0.1.0] — 2026-03-22
 
 ### 🎉 First Release
