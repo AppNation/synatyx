@@ -189,6 +189,10 @@ def _default_user_id() -> str:
 
 class Settings(BaseSettings):
     app_name: str = "Synatyx Context Engine"
+    # Bumped alongside pyproject version. GIT_COMMIT is baked in at Docker
+    # build time (see Dockerfile ARG); "local" when running outside Docker.
+    app_version: str = "0.2.0"
+    git_commit: str = "local"  # env GIT_COMMIT — baked in at Docker build time
     debug: bool = False
     log_level: str = "INFO"
     run_mode: RunMode = RunMode.MCP

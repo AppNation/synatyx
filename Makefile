@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := run
 PYTHON := .venv/bin/python3
 UV := uv
+export GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ run:
 
 .PHONY: up
 up:
-	docker compose up -d --build
+	docker compose up -d --build  # GIT_COMMIT exported above → baked into images
 
 .PHONY: down
 down:

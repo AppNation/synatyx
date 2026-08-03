@@ -156,8 +156,20 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 # Health endpoint
 # ---------------------------------------------------------------------------
 
+def server_info() -> dict:
+    """Build/runtime identity shown on /health and the dashboard — makes it
+    obvious at a glance which build (local vs prod) a server is running."""
+    from src.transports.mcp.tools import TOOL_DEFINITIONS
+    return {
+        "version": settings.app_version,
+        "commit": settings.git_commit,
+        "tools": len(TOOL_DEFINITIONS),
+        "transports": ["streamable-http:/mcp", "sse:/mcp/sse (deprecated)"],
+    }
+
+
 async def health(_request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "synatyx-mcp"})
+    return JSONResponse({"status": "ok", "service": "synatyx-mcp", **server_info()})
 
 
 # ---------------------------------------------------------------------------

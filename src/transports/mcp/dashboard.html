@@ -205,6 +205,7 @@
   <header>
     <h1>Synatyx</h1>
     <span class="sub">memory core</span>
+    <span class="sub" id="server-info" title="server build"></span>
     <span class="spacer"></span>
     <span class="sub live"><i></i><span id="updated"></span></span>
     <button id="refresh">Refresh</button>
@@ -821,6 +822,11 @@ async function boot() {
     else if (biggest) sel.value = biggest.collection;
   }
 
+  const srv = overview.server;
+  if (srv) {
+    $("server-info").textContent =
+      "v" + srv.version + " · " + srv.tools + " tools · " + srv.commit;
+  }
   $("updated").textContent = "synced " + new Date().toLocaleTimeString();
   await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph()]);
 }

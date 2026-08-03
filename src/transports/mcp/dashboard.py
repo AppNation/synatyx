@@ -81,7 +81,8 @@ async def api_overview(request: Request) -> JSONResponse:
         "open_tasks": len(open_tasks),
     }
 
-    return JSONResponse({"totals": totals, "collections": collections})
+    from src.transports.mcp.http_server import server_info
+    return JSONResponse({"totals": totals, "collections": collections, "server": server_info()})
 
 
 async def api_items(request: Request) -> JSONResponse:

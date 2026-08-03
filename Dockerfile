@@ -36,6 +36,10 @@ COPY --from=deps /app/.venv /app/.venv
 # Copy application source
 COPY --chown=synatyx:synatyx . .
 
+# Build identity — surfaced on /health and the dashboard header
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
