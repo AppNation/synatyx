@@ -12,7 +12,12 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 Memory is **living state**, not a one-time load at session start. The model must **read fresh context when it matters** and **write back when ground truth changes** so the next turn (human or agent) sees an accurate picture.
 
 - **Before starting any significant task, call `context_pack`** (query = the task, user_id, project, max_tokens) — one call returns a prompt-ready block: relevant memories + relations, pinned checkpoints, dead-end attempts, open tasks, matching skills, and code-index hits. It replaces separate retrieve + task_list + skill_find calls. Inject its `rendered` field.
-- **Code questions**: use `context_index_search` for "where is X / how does X work" (backtick exact identifiers). Build/refresh the persistent index with `context_index` (idempotent, per-project `ctx_<slug>__index`); `context_index_status` reports stale files.
+- **Route searches by question type** — the gate is "search Synatyx first", but with the right tool:
+  - `context_index_search` — code and file location, "where is X", "which file has X", "how does X work". Backtick exact identifiers in the query (`` `deleteTopics` ``) — the hybrid search boosts exact-symbol matches.
+  - `context_retrieve` — decisions, architecture rationale, conventions, preferences, past work. It searches stored memories, not source code; it structurally cannot answer code-location questions.
+  - grep / file reads — only after the appropriate Synatyx search above has missed.
+- **Index staleness escape hatch**: if `context_index_status` reports non-empty `stale_files`/`missing_files`, or the project was never indexed, run `context_index` (idempotent, per-project `ctx_<slug>__index`) before trusting index results.
+- Note: `context_index*` (Synatyx, persistent per-project `ctx_<slug>__index`) is unrelated to any `ctx_*` context-mode tools (`ctx_index`/`ctx_search` — session-only in-memory FTS5). Code lookups belong to `context_index_search`.
 - **Retrieve again** when the conversation has moved on, after substantial tool/code work, when the user’s question may depend on stored facts you have not loaded yet, or when you are unsure whether your cached understanding is still valid (see Mid-Conversation Retrieval).
 - **Store or update** as soon as a durable fact changes: decisions, fixes, preferences, config, file/module layout, or task status. Prefer many small accurate writes over one giant end-of-session dump.
 - **Deprecate then replace** whenever you correct or supersede something already in memory — never leave contradictory items both active (see Keeping Memory Fresh).

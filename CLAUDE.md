@@ -13,9 +13,12 @@ If a `context_retrieve` ever comes back empty, read its `diagnostics` block — 
 
 ## Synatyx Memory — During the Session
 
-- **MANDATORY: Always call `context_retrieve` BEFORE reading any file, searching code, or answering any question about the project** — if memory has sufficient context, answer directly without touching the filesystem. Only fall through to file reads or code searches if memory explicitly lacks the answer or user mentioned read directly from files.
+- **MANDATORY: Search Synatyx BEFORE reading any file, grepping, or answering any question about the project — pick the tool by question type:**
+  - `context_index_search` for code and file location — "where is X", "which file has X", "how does X work". Backtick exact identifiers in the query; the hybrid search boosts exact-symbol matches.
+  - `context_retrieve` for decisions, architecture rationale, conventions, preferences, and past work — it searches stored memories, not source code, and structurally cannot answer code-location questions.
+  - Fall through to grep/file reads only after the appropriate Synatyx search misses, or when the user asks to read files directly.
 - **Before starting any significant task, call `context_pack`** (query = the task, user_id, project, max_tokens) — one call returns a prompt-ready block: relevant memories + relations, pinned checkpoints, dead-end attempts, open tasks, matching skills, and code-index hits. It replaces separate retrieve + task_list + skill_find calls. Inject its `rendered` field.
-- For "where is X / how does X work" questions about code, use `context_index_search` (backtick exact identifiers). Build/refresh the persistent index with `context_index` (idempotent, per-project `ctx_<slug>__index`); `context_index_status` reports stale files.
+- **Code-index staleness**: check `context_index_status` — if `stale_files`/`missing_files` are non-empty or the project was never indexed, run `context_index` (idempotent, per-project `ctx_<slug>__index`) before trusting index results.
 - Call `context_store` silently whenever a decision, fact, or convention is established — pass `origin` ("user-stated" when the user said it, "agent-inferred" for your own conclusions, "web-search" for facts found online)
 - When a fact refers to specific files, pass `metadata.files: [paths]` (hashed for staleness detection) and `metadata.fact_type` ("file-location" | "config" | "architecture" | "preference") for type-aware decay. Treat retrieved memories flagged `possibly_stale` as hypotheses — verify against the file first
 - After a failed approach, store an attempt record: L2 with metadata `{type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these next session
@@ -27,7 +30,7 @@ If a `context_retrieve` ever comes back empty, read its `diagnostics` block — 
 
 ## context-mode Indexing → Synatyx Sync
 
-`ctx_index` (and `ctx_batch_execute`) store content in an **in-memory FTS5 SQLite database** — session-only, lost when Claude exits. After indexing any significant file (plan, architecture doc, schema), also persist the key facts into Synatyx:
+`ctx_index` (and `ctx_batch_execute`) store content in an **in-memory FTS5 SQLite database** — session-only, lost when Claude exits. These `ctx_*` context-mode tools are a **different system** from Synatyx's persistent `context_index*` code index (`ctx_<slug>__index`): code and file-location lookups belong to `context_index_search`, never `ctx_search`. After indexing any significant file (plan, architecture doc, schema), also persist the key facts into Synatyx:
 
 1. After `ctx_index` on a plan or spec file → call `context_store` (L3) with the key decisions, step list, or architecture extracted from it
 2. After `ctx_batch_execute` that reveals new facts about the codebase → call `context_store` (L3) to record what was found
