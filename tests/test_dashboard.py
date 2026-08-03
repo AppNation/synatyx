@@ -12,6 +12,7 @@ from src.models.relation import MemoryRelation
 from src.models.task import Task, TaskPriority, TaskStatus
 from src.transports.mcp.dashboard import (
     api_graph,
+    api_indexes,
     api_items,
     api_overview,
     api_tasks,
@@ -138,6 +139,7 @@ def _client(
             Route("/dashboard/api/tasks", api_tasks),
             Route("/dashboard/api/users", api_users),
             Route("/dashboard/api/graph", api_graph),
+            Route("/dashboard/api/indexes", api_indexes),
         ]
     )
     app.state.qdrant = FakeQdrant(collections)
@@ -345,3 +347,44 @@ def test_endpoints_503_before_lifespan() -> None:
     app = Starlette(routes=[Route("/dashboard/api/overview", api_overview)])
     client = TestClient(app)
     assert client.get("/dashboard/api/overview").status_code == 503
+
+
+# ── api_indexes ──────────────────────────────────────────────────────────────
+
+def test_indexes_lists_index_collections_only() -> None:
+    collections = {
+        "ctx_synatyx": [_item()],
+        "ctx_myapp__index": [
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 3, "language": "python",
+             "path": "src/a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 1, "chunk_total": 3, "language": "python",
+             "path": "src/a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 2, "language": "md",
+             "path": "README.md", "indexed_at": "2026-08-03T11:00:00+00:00"},
+        ],
+    }
+    client = _client(collections, tasks=[])
+    res = client.get("/dashboard/api/indexes")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["count"] == 1
+    ix = data["indexes"][0]
+    assert ix["project"] == "myapp"
+    assert ix["files"] == 2          # chunk-0 records only
+    assert ix["chunks"] == 5         # 3 + 2 via chunk_total
+    assert ix["by_language"] == {"python": 1, "md": 1}
+    assert ix["last_indexed_at"] == "2026-08-03T11:00:00+00:00"
+    assert ix["users"] == ["u1"]
+
+
+def test_overview_still_excludes_index_collections() -> None:
+    collections = {
+        "ctx_synatyx": [_item()],
+        "ctx_myapp__index": [
+            {"user_id": "u1", "chunk_index": 0, "chunk_total": 1, "language": "python",
+             "path": "a.py", "indexed_at": "2026-08-03T10:00:00+00:00"},
+        ],
+    }
+    client = _client(collections, tasks=[])
+    names = [c["collection"] for c in client.get("/dashboard/api/overview").json()["collections"]]
+    assert "ctx_myapp__index" not in names

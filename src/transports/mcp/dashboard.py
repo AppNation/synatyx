@@ -297,6 +297,64 @@ async def api_graph(request: Request) -> JSONResponse:
     )
 
 
+async def api_indexes(request: Request) -> JSONResponse:
+    """Per-project code/doc index stats (ctx_<slug>__index collections):
+    file/chunk counts, language breakdown, last index time, users."""
+    from src.core.project import INDEX_SUFFIX, is_index_collection
+
+    storages = _storages(request)
+    if storages is None:
+        return JSONResponse({"error": "server not ready"}, status_code=503)
+    qdrant, _ = storages
+
+    names = sorted(
+        n for n in await qdrant.get_all_collections()
+        if n.startswith(_COLLECTION_PREFIX) and is_index_collection(n)
+    )
+    indexes = []
+    for name in names:
+        scoped = qdrant.scoped(name)
+        file_records: list[dict[str, Any]] = []
+        offset = None
+        try:
+            while True:
+                payloads, offset = await scoped.scan_all_items(
+                    include_deprecated=True, limit=1000, offset=offset
+                )
+                file_records.extend(p for p in payloads if p.get("chunk_index") == 0)
+                if offset is None:
+                    break
+        except Exception:
+            logger.exception("index scan failed for %s", name)
+            continue
+
+        by_language: dict[str, int] = {}
+        chunks = 0
+        last: str | None = None
+        users: set[str] = set()
+        for p in file_records:
+            lang = p.get("language") or "unknown"
+            by_language[lang] = by_language.get(lang, 0) + 1
+            chunks += p.get("chunk_total") or 1
+            if p.get("user_id"):
+                users.add(p["user_id"])
+            ts = p.get("indexed_at")
+            if ts and (last is None or ts > last):
+                last = ts
+
+        indexes.append({
+            "collection": name,
+            "project": name.removeprefix(_COLLECTION_PREFIX).removesuffix(INDEX_SUFFIX),
+            "files": len(file_records),
+            "chunks": chunks,
+            "by_language": dict(sorted(by_language.items(), key=lambda kv: -kv[1])),
+            "last_indexed_at": last,
+            "users": sorted(users),
+        })
+
+    return JSONResponse({"count": len(indexes), "indexes": indexes})
+
+
 async def api_tasks(request: Request) -> JSONResponse:
     """Tasks across all users, optionally filtered by status."""
     storages = _storages(request)
