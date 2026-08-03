@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit *)",
+      "Bash(npx eslint *)",
+      "Bash(npx jest *)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm lint *)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm vitest *)",
+      "Bash(gcloud logging read *)",
+      "Bash(gcloud secrets list *)",
+      "Bash(docker compose logs *)",
+      "Bash(git fetch *)",
+      "mcp__user-synatyx__context_brief",
+      "mcp__user-synatyx__context_retrieve",
+      "mcp__user-synatyx__context_get",
+      "mcp__user-synatyx__context_get_project",
+      "mcp__user-synatyx__context_set_project",
+      "mcp__user-synatyx__context_list",
+      "mcp__user-synatyx__context_store",
+      "mcp__user-synatyx__context_checkpoint",
+      "mcp__user-synatyx__context_deprecate",
+      "mcp__user-synatyx__context_relate",
+      "mcp__user-synatyx__context_task_list",
+      "mcp__user-synatyx__context_task_add",
+      "mcp__user-synatyx__context_task_update",
+      "mcp__claude_ai_Synatyx__context_store"
+    ]
+  }
+}
