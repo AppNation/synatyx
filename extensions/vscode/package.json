@@ -1,0 +1,53 @@
+{
+  "name": "synatyx-indexer",
+  "displayName": "Synatyx Indexer",
+  "description": "Keeps your project indexed in a Synatyx context engine — auto-push on save, exact-symbol code search for your AI agents.",
+  "version": "0.2.0",
+  "publisher": "tanerincode",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/tanerincode/synatyx" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "synatyx.indexNow", "title": "Synatyx: Index Project Now" },
+      { "command": "synatyx.setKey", "title": "Synatyx: Set Auth Key" },
+      { "command": "synatyx.status", "title": "Synatyx: Show Index Status" }
+    ],
+    "configuration": {
+      "title": "Synatyx Indexer",
+      "properties": {
+        "synatyx.url": {
+          "type": "string",
+          "default": "https://context.angeneral.com",
+          "description": "Synatyx server base URL"
+        },
+        "synatyx.userId": {
+          "type": "string",
+          "default": "",
+          "description": "Memory user id (default: OS username)"
+        },
+        "synatyx.project": {
+          "type": "string",
+          "default": "",
+          "description": "Project slug (default: workspace folder name)"
+        },
+        "synatyx.indexOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Push changed files to the index after saves (debounced)"
+        },
+        "synatyx.indexOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a full diff+push shortly after the workspace opens"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce package --no-dependencies"
+  }
+}

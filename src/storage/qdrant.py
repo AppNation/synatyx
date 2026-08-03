@@ -72,8 +72,13 @@ class QdrantStorage:
         clone._client = self._client
         return clone
 
+    @property
+    def client(self) -> AsyncQdrantClient:
+        return self._client
+
     async def init_collection(self) -> None:
-        """Create the collection if it doesn't exist."""
+        """Create the collection if it doesn't exist, with keyword indexes on
+        the fields every hot filter uses."""
         collections = await self._client.get_collections()
         names = [c.name for c in collections.collections]
         if self._collection_name not in names:
@@ -81,6 +86,94 @@ class QdrantStorage:
                 collection_name=self._collection_name,
                 vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
+        await self.ensure_payload_indexes({
+            "user_id": "keyword",
+            "memory_layer": "keyword",
+            "is_deprecated": "bool",
+            "project": "keyword",
+            "session_id": "keyword",
+            "type": "keyword",
+        })
+
+    async def ensure_payload_indexes(self, schema: dict[str, Any]) -> None:
+        """Idempotently create payload indexes. Values are either a Qdrant
+        field-schema string ("keyword", "integer", "bool") or a params object
+        (e.g. TextIndexParams). Failures are logged and swallowed — an index
+        is an optimization, never a reason to refuse startup."""
+        import logging
+        logger = logging.getLogger(__name__)
+        for field, field_schema in schema.items():
+            try:
+                await self._client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name=field,
+                    field_schema=field_schema,
+                )
+            except Exception as exc:
+                # "already exists" lands here too — that's the common case
+                logger.debug(
+                    "Payload index %s.%s not created: %s",
+                    self._collection_name, field, exc,
+                )
+
+    # ------------------------------------------------------------------
+    # Point-level helpers for the code/doc index (deterministic ids,
+    # condition-based sweeps, full-text lookups)
+    # ------------------------------------------------------------------
+
+    async def upsert_points(self, points: list[PointStruct]) -> None:
+        if points:
+            await self._client.upsert(collection_name=self._collection_name, points=points)
+
+    async def retrieve_points(
+        self, ids: list[str], with_payload: bool = True, with_vectors: bool = False
+    ) -> list[Any]:
+        if not ids:
+            return []
+        return await self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=ids,
+            with_payload=with_payload,
+            with_vectors=with_vectors,
+        )
+
+    async def set_payload(self, payload: dict[str, Any], ids: list[str]) -> None:
+        """Merge payload keys into existing points by id (no vector change)."""
+        if ids:
+            await self._client.set_payload(
+                collection_name=self._collection_name,
+                payload=payload,
+                points=ids,
+            )
+
+    async def delete_by_conditions(self, conditions: list[Any]) -> None:
+        await self._client.delete(
+            collection_name=self._collection_name,
+            points_selector=Filter(must=conditions),
+        )
+
+    async def scroll_by_conditions(
+        self,
+        conditions: list[Any],
+        limit: int = 1000,
+        offset: Any = None,
+        with_payload: bool = True,
+    ) -> tuple[list[Any], Any]:
+        records, next_offset = await self._client.scroll(
+            collection_name=self._collection_name,
+            scroll_filter=Filter(must=conditions),
+            limit=limit,
+            offset=offset,
+            with_payload=with_payload,
+            with_vectors=False,
+        )
+        return records, next_offset
+
+    async def text_search(self, conditions: list[Any], limit: int = 20) -> list[Any]:
+        """Keyword lookup via a scroll with MatchText/MatchValue conditions —
+        finds exact identifiers dense search can miss."""
+        records, _ = await self.scroll_by_conditions(conditions, limit=limit)
+        return records
 
     async def upsert(self, item: ContextItem) -> str:
         """Insert or update a ContextItem in the vector store."""
@@ -153,12 +246,17 @@ class QdrantStorage:
         session_id: str | None = None,
         project: str | None = None,
         type_filter: str | None = None,
+        pinned_only: bool = False,
     ) -> list[ScoredContextItem]:
         """Similarity search filtered by user_id and optionally memory_layer or session_id."""
         conditions: list[Any] = [
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
             FieldCondition(key="is_deprecated", match=MatchValue(value=False)),
         ]
+        if pinned_only:
+            conditions.append(
+                FieldCondition(key="is_pinned", match=MatchValue(value=True))
+            )
         if memory_layer:
             conditions.append(
                 FieldCondition(key="memory_layer", match=MatchValue(value=memory_layer.value))
@@ -189,20 +287,26 @@ class QdrantStorage:
         items = []
         for r in results:
             p = r.payload or {}
-            item = ScoredContextItem(
-                id=str(r.id),
-                user_id=p.get("user_id", ""),
-                session_id=p.get("session_id"),
-                content=p.get("content", ""),
-                memory_layer=MemoryLayer(p.get("memory_layer", "L3")),
-                importance=p.get("importance", 0.5),
-                is_pinned=p.get("is_pinned", False),
-                is_deprecated=p.get("is_deprecated", False),
-                metadata=p.get("metadata", {}),
-                score=r.score,
-                semantic_score=r.score,
-            )
-            items.append(item)
+            kwargs: dict[str, Any] = {
+                "id": str(r.id),
+                "user_id": p.get("user_id", ""),
+                "session_id": p.get("session_id"),
+                "content": p.get("content", ""),
+                "memory_layer": MemoryLayer(p.get("memory_layer", "L3")),
+                "importance": p.get("importance", 0.5),
+                "is_pinned": p.get("is_pinned", False),
+                "is_deprecated": p.get("is_deprecated", False),
+                "metadata": p.get("metadata", {}),
+                "score": r.score,
+                "semantic_score": r.score,
+            }
+            # Restore the stored timestamp — defaulting to "now" would make
+            # every hit look brand new to the recency signal.
+            created_raw = p.get("created_at")
+            if created_raw:
+                from datetime import datetime
+                kwargs["created_at"] = datetime.fromisoformat(created_raw)
+            items.append(ScoredContextItem(**kwargs))
         return items
 
     @staticmethod

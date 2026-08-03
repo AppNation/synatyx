@@ -121,3 +121,89 @@ def test_estimate_tokens_correct(manager):
     # 400 chars // 4 = 100 tokens each, 3 items = 300
     assert manager.estimate_tokens(items) == 300
 
+
+
+# ── fit_entries / SectionBudgeter ────────────────────────────────────────────
+
+from src.core.budget import BudgetEntry, SectionBudgeter, fit_entries
+
+
+def _entry(content: str, **payload) -> BudgetEntry:
+    return BudgetEntry(
+        tokens=len(content) // 4,
+        payload={"content": content, **payload},
+        raw_content=content,
+    )
+
+
+def test_fit_entries_greedy_pack():
+    entries = [_entry("a" * 400), _entry("b" * 400), _entry("c" * 400)]
+    result = fit_entries(entries, 250)
+    assert len(result.entries) == 2
+    assert result.used == 200
+    assert result.overflow == 1
+    assert result.allocated == 250
+
+
+def test_fit_entries_truncates_oversized_first():
+    entries = [_entry("x" * 4000)]
+    result = fit_entries(entries, 100)
+    assert len(result.entries) == 1
+    assert result.entries[0]["truncated"] is True
+    assert result.entries[0]["content"].endswith("…")
+    assert len(result.entries[0]["content"]) <= 401
+    assert result.used == 100
+
+
+def test_fit_entries_zero_budget_empty():
+    result = fit_entries([_entry("x" * 400)], 0)
+    assert result.entries == []
+    assert result.overflow == 1
+
+
+def test_fit_entries_lazy_payload_only_materialized_when_selected():
+    calls = []
+
+    def make_payload(name):
+        def _p():
+            calls.append(name)
+            return {"content": name}
+        return _p
+
+    entries = [
+        BudgetEntry(tokens=50, payload=make_payload("first"), raw_content="first"),
+        BudgetEntry(tokens=500, payload=make_payload("second"), raw_content="second"),
+    ]
+    fit_entries(entries, 60)
+    assert calls == ["first"]  # second overflowed and was never serialized
+
+
+def test_section_budgeter_renormalizes_absent_sections():
+    b = SectionBudgeter(1000, {"a": 0.5, "b": 0.3, "c": 0.2})
+    full = b.allocate()
+    subset = b.allocate(["a", "b"])
+    assert full["a"] == 500
+    assert subset["a"] == 625  # 0.5 / 0.8
+    assert subset["b"] == 375
+
+
+def test_section_budgeter_spillover_redistributes():
+    b = SectionBudgeter(1000, {"a": 0.5, "b": 0.5})
+    sections = {
+        "a": [_entry("x" * 40)],                      # uses 10 of 500
+        "b": [_entry("y" * 1600) for _ in range(3)],  # 400 each — overflows 500
+    }
+    with_spill = b.pack(sections, spillover=True)
+    without = b.pack(sections, spillover=False)
+    assert len(without["b"].entries) == 1
+    assert len(with_spill["b"].entries) > len(without["b"].entries)
+    # total never exceeds the overall budget
+    assert sum(r.used for r in with_spill.values()) <= 1000
+
+
+def test_section_budgeter_spillover_off_matches_base_allocation():
+    b = SectionBudgeter(1000, {"a": 0.5, "b": 0.5})
+    sections = {"a": [_entry("x" * 40)], "b": [_entry("y" * 4000)]}
+    results = b.pack(sections, spillover=False)
+    assert results["a"].allocated == 500
+    assert results["b"].allocated == 500

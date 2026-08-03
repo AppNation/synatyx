@@ -77,6 +77,16 @@
   select option { background: #12111c; color: var(--ink); }
   input[type="checkbox"] { accent-color: var(--violet); }
 
+  .nav { display: flex; gap: 8px; margin-bottom: 18px; }
+  .nav .tab {
+    text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--muted); background: transparent;
+    border: 1px solid transparent; border-radius: 10px; padding: 7px 14px;
+  }
+  .nav .tab:hover { color: var(--ink); border-color: var(--line); }
+  .nav .tab.active { color: var(--ink); background: var(--panel); border-color: var(--line-2); }
+
   .card {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -205,11 +215,19 @@
   <header>
     <h1>Synatyx</h1>
     <span class="sub">memory core</span>
+    <span class="sub" id="server-info" title="server build"></span>
     <span class="spacer"></span>
     <span class="sub live"><i></i><span id="updated"></span></span>
     <button id="refresh">Refresh</button>
   </header>
 
+  <nav class="nav">
+    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab" data-view="memories">Recent memories</button>
+    <button class="tab" data-view="indexes">Code indexes</button>
+  </nav>
+
+  <div id="view-overview">
   <div class="tiles" id="tiles"></div>
 
   <div class="charts">
@@ -225,7 +243,7 @@
   </div>
 
   <div class="card" style="margin-bottom:16px">
-    <h2>Memory graph — 3D · drag to rotate</h2>
+    <h2>Memory graph — 3D · drag rotate · scroll zoom · shift-drag pan · click node to focus · dbl-click reset</h2>
     <div class="controls">
       <label>Collection
         <select id="sel-graph-collection"></select>
@@ -246,7 +264,9 @@
     </div>
     <div id="graph"></div>
   </div>
+  </div><!-- /view-overview -->
 
+  <div id="view-memories" style="display:none">
   <div class="grid2">
     <div class="card">
       <h2>Recent memories</h2>
@@ -288,6 +308,38 @@
       </div>
     </div>
   </div>
+  </div><!-- /view-memories -->
+
+  <div id="view-indexes" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <h2>Code indexes — one collection per project (ctx_&lt;slug&gt;__index)</h2>
+      <div id="indexes"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>Index map — 3D · files by directory · drag rotate · scroll zoom · shift-drag pan · click file to focus + inspect · dbl-click reset</h2>
+      <div class="controls">
+        <label>Project
+          <select id="sel-index"></select>
+        </label>
+        <span class="sub" id="index-graph-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div class="legend" id="index-legend"></div>
+      <div id="index-graph"></div>
+    </div>
+
+    <div class="card">
+      <h2>Chunks</h2>
+      <div class="controls">
+        <label>Filter
+          <input id="chunk-filter" type="text" placeholder="path or symbol…"
+                 style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;width:240px">
+        </label>
+        <span class="sub" id="chunk-stats" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <div id="index-chunks"></div>
+    </div>
+  </div><!-- /view-indexes -->
 </div>
 
 <div id="tooltip"></div>
@@ -521,7 +573,6 @@ async function loadUsers() {
    nodes first, then edges, feeding the shared tooltip. Deprecated nodes are
    dashed outlines, pinned nodes wear a bright ring. */
 const GOLDEN_ANGLE = 2.399963;
-let graphAnim = null; /* cancels the previous render loop on re-render */
 
 function layout3d(nodes, edges) {
   let seed = 42; /* deterministic: same data → same cloud */
@@ -560,38 +611,66 @@ function nodeTip(n) {
     `<div class='tt-row'>${esc(n.user_id || "")}${flags ? " · " + flags : ""}</div>`;
 }
 
-function renderGraph(data) {
-  if (graphAnim) { cancelAnimationFrame(graphAnim); graphAnim = null; }
+/* Shared 3D point-cloud renderer — memory graph and code-index graph both
+   use it; opts carries the per-graph identity (colors, tooltips, targets). */
+function render3D(data, opts) {
+  const box = opts.box;
+  if (box._anim) { cancelAnimationFrame(box._anim); box._anim = null; }
   let nodes = data.nodes.map((n) => ({ ...n }));
   let edges = data.edges;
-  if ($("chk-connected").checked) {
+  if (opts.onlyConnected && opts.onlyConnected()) {
     const linked = new Set();
     edges.forEach((e) => { linked.add(e.source); linked.add(e.target); });
     nodes = nodes.filter((n) => linked.has(n.id));
   }
-  $("graph-stats").textContent = `${nodes.length} nodes · ${edges.length} relations`;
+  if (opts.statsEl) opts.statsEl.textContent =
+    `${nodes.length} nodes · ${edges.length} ${opts.edgeWord || "relations"}`;
   if (!nodes.length) {
-    $("graph").innerHTML = `<div class="empty">Nothing to draw${$("chk-connected").checked ? " — no relation edges in this collection yet" : ""}.</div>`;
+    box.innerHTML = `<div class="empty">Nothing to draw.</div>`;
     return;
   }
 
-  const R = layout3d(nodes, edges);
+  layout3d(nodes, edges);
+  /* actual cloud extent — the spring pass contracts nodes well inside the
+     nominal layout radius, so fit and rings must measure, not assume */
+  const cloudR = nodes.reduce((m, n) => Math.max(m, Math.hypot(n.x, n.y, n.z)), 1);
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const idxById = new Map(nodes.map((n, i) => [n.id, i]));
   const links = edges
     .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target), type: e.type }))
     .filter((l) => l.a && l.b);
 
-  const box = $("graph");
+  /* per-node drift — tiny phase-shifted orbits keep the cloud alive */
+  nodes.forEach((n) => {
+    n._ph = Math.random() * Math.PI * 2;
+    n._ph2 = Math.random() * Math.PI * 2;
+    n._amp = 2 + Math.random() * 3.5;
+  });
+
+  /* adjacency for selection highlighting */
+  const adj = new Map();
+  const addAdj = (a, b) => { if (!adj.has(a)) adj.set(a, new Set()); adj.get(a).add(b); };
+  links.forEach((l) => { addAdj(l.a.id, l.b.id); addAdj(l.b.id, l.a.id); });
+
   box.innerHTML = "";
   const canvas = document.createElement("canvas");
   box.appendChild(canvas);
   const ctx = canvas.getContext("2d");
   const DPR = Math.min(2, window.devicePixelRatio || 1);
   const CSS_H = Math.max(340, Math.min(560, 180 + nodes.length * 1.4));
+  const HIGHLIGHT = opts.highlight || "#67e8f9";
 
-  let yaw = 0.6, pitch = 0.26, dragging = null, hovering = false;
+  let yaw = 0.6, pitch = 0.26, zoom = 1, panX = 0, panY = 0;
+  let baseZoom = 1, userZoomed = false;
+  let dragging = null, hovering = false, selectedId = null;
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let proj = [];
+
+  const wob = (n, t) => reduced ? n : {
+    x: n.x + Math.sin(t * 0.7 + n._ph) * n._amp,
+    y: n.y + Math.cos(t * 0.9 + n._ph2) * n._amp,
+    z: n.z + Math.sin(t * 0.8 + n._ph + n._ph2) * n._amp,
+  };
 
   function project(p, W, H) {
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -601,7 +680,8 @@ function renderGraph(data) {
     let y = p.y * cp - z * sp;
     z = p.y * sp + z * cp;
     const f = 460 / (460 + z);
-    return { x: W / 2 + x * f, y: H / 2 + y * f, f, z };
+    /* f drives radius (zoom-scaled); d drives depth alpha (zoom-independent) */
+    return { x: W / 2 + panX + x * f * zoom, y: H / 2 + panY + y * f * zoom, f: f * zoom, d: f, z };
   }
 
   function draw() {
@@ -612,7 +692,7 @@ function renderGraph(data) {
     /* wireframe orbit rings ground the cloud in space */
     ctx.strokeStyle = "rgba(167,139,250,0.16)";
     ctx.lineWidth = 1;
-    for (const ringR of [R * 0.6, R * 0.9, R * 1.18]) {
+    for (const ringR of [cloudR * 0.62, cloudR * 0.92, cloudR * 1.18]) {
       ctx.beginPath();
       for (let a = 0; a <= 72; a++) {
         const ang = (a / 72) * Math.PI * 2;
@@ -622,13 +702,21 @@ function renderGraph(data) {
       ctx.stroke();
     }
 
-    proj = nodes.map((n) => project(n, W, H));
+    const t = performance.now() / 1000;
+    proj = nodes.map((n) => project(wob(n, t), W, H));
+
+    const neighbors = selectedId ? (adj.get(selectedId) || new Set()) : null;
 
     links.forEach((l) => {
-      const A = project(l.a, W, H), B = project(l.b, W, H);
+      const A = proj[idxById.get(l.a.id)], B = proj[idxById.get(l.b.id)];
       l.px = A; l.py = B;
-      ctx.strokeStyle = `rgba(167,139,250,${(0.18 + 0.35 * (A.f + B.f) / 2).toFixed(2)})`;
-      ctx.lineWidth = 1;
+      const touching = selectedId && (l.a.id === selectedId || l.b.id === selectedId);
+      let alpha = 0.18 + 0.35 * (A.d + B.d) / 2;
+      if (selectedId) alpha = touching ? 0.85 : alpha * 0.12;
+      ctx.strokeStyle = touching
+        ? `rgba(103,232,249,${alpha.toFixed(2)})`
+        : `rgba(167,139,250,${alpha.toFixed(2)})`;
+      ctx.lineWidth = touching ? 1.8 : 1;
       ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
     });
 
@@ -637,8 +725,12 @@ function renderGraph(data) {
     for (const i of order) {
       const n = nodes[i], q = proj[i];
       const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f;
-      const depth = Math.max(0.25, Math.min(1, q.f * q.f));
-      const c = LAYER_HEX[n.memory_layer] || "#8b90a6";
+      let depth = Math.max(0.25, Math.min(1, q.d * q.d));
+      /* focus mode: everything outside the selected node + neighbors recedes */
+      if (selectedId && n.id !== selectedId && !(neighbors && neighbors.has(n.id))) {
+        depth *= 0.22;
+      }
+      const c = opts.color(n);
       if (n.is_deprecated) {
         ctx.setLineDash([3, 2]);
         ctx.strokeStyle = `rgba(139,144,166,${(0.7 * depth).toFixed(2)})`;
@@ -657,6 +749,11 @@ function renderGraph(data) {
         ctx.strokeStyle = "#f1f2fa"; ctx.lineWidth = 1.6;
         ctx.beginPath(); ctx.arc(q.x, q.y, r + 2.4, 0, Math.PI * 2); ctx.stroke();
       }
+      if (n.id === selectedId) {
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+        ctx.strokeStyle = HIGHLIGHT; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(q.x, q.y, r + 3.5, 0, Math.PI * 2); ctx.stroke();
+      }
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
   }
@@ -665,13 +762,20 @@ function renderGraph(data) {
     const w = box.clientWidth || 1100;
     canvas.width = w * DPR; canvas.height = CSS_H * DPR;
     canvas.style.height = CSS_H + "px";
+    /* fit the cloud to the canvas — R is the layout sphere radius, which
+       projects to ≈R px at z=0, so scale it to ~84% of the short side */
+    baseZoom = Math.max(0.4, Math.min(3.5, (Math.min(w, CSS_H) * 0.42) / cloudR));
+    if (!userZoomed) zoom = baseZoom;
     draw();
   }
 
   function tick() {
-    if (!dragging && !hovering && !reduced) yaw += 0.0032;
-    draw();
-    graphAnim = requestAnimationFrame(tick);
+    if (box.offsetParent !== null) {  /* skip drawing while the tab is hidden */
+      /* pause auto-orbit while focused on a node — spinning fights inspection */
+      if (!dragging && !hovering && !reduced && !selectedId) yaw += 0.0032;
+      draw();
+    }
+    box._anim = requestAnimationFrame(tick);
   }
 
   const toLocal = (evt) => {
@@ -684,33 +788,72 @@ function renderGraph(data) {
     return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
   };
 
-  canvas.addEventListener("pointerdown", (evt) => {
-    dragging = { x: evt.clientX, y: evt.clientY, yaw, pitch };
-    canvas.setPointerCapture(evt.pointerId);
-    canvas.classList.add("dragging");
-    hideTip();
-    evt.preventDefault();
-  });
-  canvas.addEventListener("pointermove", (evt) => {
-    if (dragging) {
-      yaw = dragging.yaw + (evt.clientX - dragging.x) * 0.006;
-      pitch = Math.max(-1.25, Math.min(1.25, dragging.pitch + (evt.clientY - dragging.y) * 0.006));
-      if (reduced) draw();
-      return;
-    }
-    /* hover: nodes first (nearest projected hit), then relation edges */
-    const p = toLocal(evt);
+  function nodeAt(p) {
     let hit = null, hitD = Infinity;
     nodes.forEach((n, i) => {
       const q = proj[i];
       if (!q) return;
       const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
-      const d = Math.hypot(p.x - q.x, p.y - q.y);
-      if (d < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
+      if (Math.hypot(p.x - q.x, p.y - q.y) < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
     });
+    return hit;
+  }
+
+  canvas.addEventListener("pointerdown", (evt) => {
+    dragging = {
+      x: evt.clientX, y: evt.clientY, yaw, pitch, panX, panY,
+      mode: evt.shiftKey ? "pan" : "rotate",
+    };
+    canvas.setPointerCapture(evt.pointerId);
+    canvas.classList.add("dragging");
+    hideTip();
+    evt.preventDefault();
+  });
+  canvas.addEventListener("pointerup", (evt) => {
+    /* a press that barely moved is a click: select + highlight relations */
+    if (dragging && Math.hypot(evt.clientX - dragging.x, evt.clientY - dragging.y) < 5) {
+      const hit = nodeAt(toLocal(evt));
+      selectedId = hit && hit.id !== selectedId ? hit.id : null;
+      if (hit && opts.onClick) opts.onClick(hit);
+      if (reduced) draw();
+    }
+  });
+  canvas.addEventListener("dblclick", () => {
+    yaw = 0.6; pitch = 0.26; zoom = baseZoom; userZoomed = false;
+    panX = 0; panY = 0; selectedId = null;
+    if (reduced) draw();
+  });
+  canvas.addEventListener("wheel", (evt) => {
+    evt.preventDefault();
+    const p = toLocal(evt);
+    const W = canvas.width / DPR, H = canvas.height / DPR;
+    userZoomed = true;
+    const next = Math.max(0.25, Math.min(6, zoom * Math.exp(-evt.deltaY * 0.0014)));
+    /* keep the point under the cursor fixed while zooming */
+    const scale = next / zoom;
+    panX = (p.x - W / 2) - ((p.x - W / 2) - panX) * scale;
+    panY = (p.y - H / 2) - ((p.y - H / 2) - panY) * scale;
+    zoom = next;
+    if (reduced) draw();
+  }, { passive: false });
+  canvas.addEventListener("pointermove", (evt) => {
+    if (dragging) {
+      if (dragging.mode === "pan") {
+        panX = dragging.panX + (evt.clientX - dragging.x);
+        panY = dragging.panY + (evt.clientY - dragging.y);
+      } else {
+        yaw = dragging.yaw + (evt.clientX - dragging.x) * 0.006;
+        pitch = Math.max(-1.25, Math.min(1.25, dragging.pitch + (evt.clientY - dragging.y) * 0.006));
+      }
+      if (reduced) draw();
+      return;
+    }
+    /* hover: nodes first (nearest projected hit), then relation edges */
+    const p = toLocal(evt);
+    const hit = nodeAt(p);
     if (hit) {
       hovering = true;
-      showTip(nodeTip(hit), evt.clientX, evt.clientY);
+      showTip(opts.tip(hit), evt.clientX, evt.clientY);
       return;
     }
     const edge = links.find((l) => l.px && distToSeg(p, l.px, l.py) < 6);
@@ -732,6 +875,17 @@ function renderGraph(data) {
   if (reduced) draw(); else tick();
 }
 
+function renderGraph(data) {
+  render3D(data, {
+    box: $("graph"),
+    statsEl: $("graph-stats"),
+    edgeWord: "relations",
+    onlyConnected: () => $("chk-connected").checked,
+    color: (n) => LAYER_HEX[n.memory_layer] || "#8b90a6",
+    tip: nodeTip,
+  });
+}
+
 async function loadGraph() {
   const collection = $("sel-graph-collection").value;
   if (!collection) { $("graph").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
@@ -742,6 +896,96 @@ async function loadGraph() {
   } catch (e) {
     if (e.message !== "unauthorized") $("graph").innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
   }
+}
+
+/* ── code-index graph + chunks ── */
+const LANG_COLORS = ["#67e8f9", "#34d399", "#a78bfa", "#fbbf24", "#fb7185", "#f472b6", "#94a3b8"];
+let langColorMap = {};
+
+function codeNodeColor(n) {
+  if (n.kind === "project") return "#f1f2fa";
+  if (n.kind === "dir") return "#8b90a6";
+  return langColorMap[n.language] || "#8b90a6";
+}
+
+function codeNodeTip(n) {
+  if (n.kind === "file") {
+    return `<div class='tt-title'>${esc(n.label)}</div>` +
+      `<div class='tt-row'>${esc(n.language)} · ${n.chunks} chunk${n.chunks === 1 ? "" : "s"}</div>` +
+      `<div class='tt-row dim'>click to inspect chunks</div>`;
+  }
+  return `<div class='tt-title'>${esc(n.label)}</div><div class='tt-row'>${esc(n.kind)}</div>`;
+}
+
+async function loadIndexGraph() {
+  const collection = $("sel-index").value;
+  const box = $("index-graph");
+  if (!collection) { box.innerHTML = `<div class="empty">No code indexes yet.</div>`; return; }
+  let data;
+  try {
+    data = await api("/dashboard/api/index_graph?" + new URLSearchParams({ collection }));
+  } catch (e) {
+    if (e.message !== "unauthorized") box.innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
+    return;
+  }
+  /* stable language → color assignment, most common language first */
+  const counts = {};
+  data.nodes.forEach((n) => { if (n.kind === "file") counts[n.language] = (counts[n.language] || 0) + 1; });
+  langColorMap = {};
+  Object.keys(counts).sort((a, b) => counts[b] - counts[a])
+    .forEach((lang, i) => { langColorMap[lang] = LANG_COLORS[i % LANG_COLORS.length]; });
+  $("index-legend").innerHTML = Object.keys(langColorMap)
+    .map((lang) => `<span class="key"><span class="swatch" style="background:${langColorMap[lang]}"></span>${esc(lang)}</span>`)
+    .join("") +
+    `<span class="key"><span class="swatch" style="background:#8b90a6"></span>directory</span>`;
+  render3D(data, {
+    box,
+    statsEl: $("index-graph-stats"),
+    edgeWord: "links",
+    color: codeNodeColor,
+    tip: codeNodeTip,
+    onClick: (n) => {
+      if (n.kind !== "file") return;
+      $("chunk-filter").value = n.label;
+      loadIndexChunks();
+    },
+  });
+}
+
+async function loadIndexChunks() {
+  const collection = $("sel-index").value;
+  const el = $("index-chunks");
+  if (!collection) { el.innerHTML = ""; return; }
+  const params = new URLSearchParams({ collection, limit: "100" });
+  const q = $("chunk-filter").value.trim();
+  if (q) params.set("q", q);
+  let data;
+  try {
+    data = await api("/dashboard/api/index_chunks?" + params);
+  } catch (e) {
+    if (e.message !== "unauthorized") el.innerHTML = `<div class="empty">Failed to load chunks (${esc(e.message)}).</div>`;
+    return;
+  }
+  $("chunk-stats").textContent = data.count < data.total
+    ? `${data.count} of ${data.total} chunks` : `${data.total} chunks`;
+  if (!data.chunks.length) {
+    el.innerHTML = `<div class="empty">No chunks match.</div>`;
+    return;
+  }
+  el.innerHTML =
+    '<table><thead><tr><th>Path</th><th>Symbol</th><th>Kind</th>' +
+    '<th class="num">Lines</th><th>Preview</th></tr></thead><tbody>' +
+    data.chunks.map((c) => {
+      const lines = c.line_start ? `${c.line_start}–${c.line_end || "?"}` : "—";
+      const idx = c.chunk_total > 1 ? `<span class="badge">${c.chunk_index + 1}/${c.chunk_total}</span>` : "";
+      return `<tr>
+        <td class="mono" style="font-size:12px">${esc(c.path)}${idx}</td>
+        <td class="mono" style="font-size:12px">${esc(c.symbol || "—")}</td>
+        <td>${esc(c.kind || "—")}</td>
+        <td class="num">${lines}</td>
+        <td class="content-cell mono dim" style="font-size:11px">${esc(c.preview)}${c.preview.length >= 220 ? "…" : ""}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
 }
 
 /* ── tasks ── */
@@ -821,9 +1065,70 @@ async function boot() {
     else if (biggest) sel.value = biggest.collection;
   }
 
+  const srv = overview.server;
+  if (srv) {
+    $("server-info").textContent =
+      "v" + srv.version + " · " + srv.tools + " tools · " + srv.commit;
+  }
   $("updated").textContent = "synced " + new Date().toLocaleTimeString();
-  await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph()]);
+  await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph(), loadIndexes()]);
+  await Promise.all([loadIndexGraph(), loadIndexChunks()]);
 }
+
+async function loadIndexes() {
+  const el = $("indexes");
+  let data;
+  try {
+    data = await api("/dashboard/api/indexes");
+  } catch {
+    el.innerHTML = '<div class="empty">Could not load index stats.</div>';
+    return;
+  }
+  /* keep the project selector in sync (preserve the current choice) */
+  const sel = $("sel-index");
+  const prev = sel.value;
+  sel.innerHTML = data.indexes.map((ix) =>
+    `<option value="${esc(ix.collection)}">${esc(ix.project)} (${ix.files} files)</option>`).join("");
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+
+  if (!data.indexes.length) {
+    el.innerHTML = '<div class="empty">No code indexes yet — run <span class="mono">context_index</span>, ' +
+      'push with <span class="mono">scripts/index_project.py</span>, or install the Synatyx Indexer extension.</div>';
+    return;
+  }
+  el.innerHTML =
+    '<table><thead><tr><th>Project</th><th class="num">Files</th><th class="num">Chunks</th>' +
+    '<th>Languages</th><th>Users</th><th class="num">Last indexed</th></tr></thead><tbody>' +
+    data.indexes.map((ix) => {
+      const langs = Object.entries(ix.by_language)
+        .map(([l, n]) => `<span class="chip">${esc(l)}&nbsp;<span class="dim">${n}</span></span>`)
+        .join(" · ") || "—";
+      const when = ix.last_indexed_at
+        ? esc(ix.last_indexed_at.slice(0, 19).replace("T", " ")) + " UTC" : "—";
+      return `<tr>
+        <td>${esc(ix.project)}<div class="meta mono">${esc(ix.collection)}</div></td>
+        <td class="num">${ix.files}</td>
+        <td class="num">${ix.chunks}</td>
+        <td>${langs}</td>
+        <td>${ix.users.map(esc).join(", ") || "—"}</td>
+        <td class="num">${when}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
+}
+
+/* ── view tabs ─────────────────────────────────────────────────────────── */
+const VIEWS = ["overview", "memories", "indexes"];
+function showView(name) {
+  for (const v of VIEWS) $("view-" + v).style.display = v === name ? "" : "none";
+  document.querySelectorAll(".nav .tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === name));
+  sessionStorage.setItem("synatyx_view", name);
+  // the 3D graph canvas sizes from its container — re-measure when revealed
+  if (name === "overview") window.dispatchEvent(new Event("resize"));
+}
+document.querySelectorAll(".nav .tab").forEach((btn) =>
+  btn.addEventListener("click", () => showView(btn.dataset.view)));
+showView(sessionStorage.getItem("synatyx_view") || "overview");
 
 $("refresh").addEventListener("click", boot);
 $("sel-collection").addEventListener("change", () => {
@@ -839,6 +1144,15 @@ $("sel-graph-collection").addEventListener("change", () => {
 $("sel-layer").addEventListener("change", loadItems);
 $("sel-user").addEventListener("change", () => { selectedUser = $("sel-user").value; loadItems(); loadUsers(); });
 $("sel-graph-user").addEventListener("change", loadGraph);
+$("sel-index").addEventListener("change", () => {
+  $("chunk-filter").value = "";
+  loadIndexGraph(); loadIndexChunks();
+});
+let chunkFilterTimer = null;
+$("chunk-filter").addEventListener("input", () => {
+  clearTimeout(chunkFilterTimer);
+  chunkFilterTimer = setTimeout(loadIndexChunks, 300);
+});
 $("chk-deprecated").addEventListener("change", loadItems);
 $("chk-connected").addEventListener("change", loadGraph);
 $("sel-status").addEventListener("change", loadTasks);

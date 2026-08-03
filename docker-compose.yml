@@ -55,7 +55,10 @@ services:
     entrypoint: ["alembic", "upgrade", "head"]
 
   synatyx-gc:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: synatyx_gc
     restart: unless-stopped
     env_file: .env
@@ -78,7 +81,10 @@ services:
         condition: service_completed_successfully
 
   synatyx-mcp:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: synatyx_mcp
     env_file: .env
     restart: unless-stopped

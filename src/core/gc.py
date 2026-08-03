@@ -42,6 +42,11 @@ class GarbageCollector:
         totals = {"deprecated": 0, "deleted": 0, "skipped": 0}
 
         for collection in collections:
+            # Code/doc index collections are managed by context_index — TTL
+            # decay must never touch them.
+            from src.core.project import is_index_collection
+            if is_index_collection(collection):
+                continue
             # Use a collection-scoped view — never mutate the shared storage
             scoped = self._qdrant.scoped(collection)
             stats = await self._process_collection(scoped, collection, run_id)

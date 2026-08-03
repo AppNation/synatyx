@@ -28,6 +28,11 @@ def get_parser(source: str) -> BaseParser:
     )
 
 
+def has_file_parser(source: str) -> bool:
+    """True when a file-based parser (not the web parser) handles this path."""
+    return any(cls.supports(source) for cls in _PARSERS if cls is not WebParser)
+
+
 def supported_extensions() -> list[str]:
     """Return a human-readable list of all supported source types."""
     return [

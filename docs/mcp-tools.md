@@ -1,335 +1,380 @@
-# Synatyx — MCP Tools Reference
+# MCP Tools Reference
 
-Synatyx exposes **27 MCP tools** over stdio and SSE, compatible with any MCP-compliant client (Augment Code, Cursor, Claude Desktop, Claude Code).
+Synatyx exposes **31 MCP tools**. This file is generated from `src/transports/mcp/tools.json` by `scripts/gen_tool_docs.py` — edit the JSON, then regenerate.
 
----
+## Context Assembly
+
+### `context_brief`
+
+One-call session-start digest — call this FIRST in every new conversation instead of separate get_project/retrieve/task_list calls. Returns a token-budgeted briefing: identity (L4 user preferences), last_session (recent L2 summaries), project_knowledge (pinned checkpoints + top L3 facts), recent_changes (items stored in the last N days), recent_attempts (tried-and-failed records so you don't repeat dead ends), open_tasks, and stats (item counts by layer).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | yes | User identifier |
+| `session_id` | string | no | Project slug — scopes open_tasks and L1 session context |
+| `project` | string | no | Project name filter for Qdrant-level isolation (optional) |
+| `max_tokens` | integer | no | Token budget for the whole briefing (default: 2000) |
+| `recent_days` | integer | no | Window for the recent_changes section in days (default: 7) |
+
+### `context_pack`
+
+Assemble ONE prompt-ready context block for a specific task — query-driven, unlike context_brief's session-start digest. Returns structured sections (identity, relevant memories with 1-hop relations, pinned checkpoints, dead-end attempts, open tasks, matching skills, code-index hits) AND a 'rendered' markdown string ready to inject into a prompt, with provenance and staleness markers. Unspent section budget is reallocated to fuller sections. Call this before starting any significant task — it replaces separate retrieve + task_list + skill_find calls.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | yes | The task or question to pack context for |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug — overrides the active-project pointer for this call (optional) |
+| `session_id` | string | no | Session identifier for session scoping (optional) |
+| `max_tokens` | integer | no | Token budget for the whole pack (default: 3000) |
+| `include_code` | boolean | no | Include code/doc index hits when the project has an index (default: true) |
 
 ## Project Management
 
 ### `context_set_project`
-Activate a project. All subsequent memory operations are scoped to a dedicated Qdrant collection (`ctx_<slug>`). Persisted in Redis — survives server restarts.
+
+Set the active project for the current user. All subsequent memory operations (store, retrieve, list, ingest, checkpoint) will be scoped to a dedicated Qdrant collection for this project (e.g. 'synatyx' → collection 'ctx_synatyx'). The selection is persisted in Redis and survives server restarts. If unsure of the project name, call context_get_project first — it will suggest the workspace folder name.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | ✅ | Project name — slugified automatically |
+| `user_id` | string | yes | User identifier |
+| `project` | string | yes | Project name to activate (e.g. 'synatyx', 'taty-v2'). Will be slugified automatically. |
 
 ### `context_get_project`
-Return the currently active project, or suggest one based on the workspace folder name.
+
+Return the currently active project for the user. If no project has been set, returns a suggestion based on the current workspace folder name — call context_set_project with the suggested name to confirm.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-
----
+| `user_id` | string | yes | User identifier |
 
 ## Memory
 
-### `context_brief`
-One-call session-start digest — replaces the get_project → retrieve → task_list startup dance. Returns a token-budgeted briefing: `identity` (L4 preferences), `last_session` (recent L2), `project_knowledge` (pinned checkpoints + top L3), `recent_changes`, `recent_attempts` (tried-and-failed records), `open_tasks`, and `stats`. See [Session Brief & Trust](session-brief.md).
-
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `session_id` | string | — | Project slug — scopes open tasks |
-| `project` | string | — | Qdrant-level project filter |
-| `max_tokens` | integer | — | Budget for the whole briefing (default: 2000) |
-| `recent_days` | integer | — | Window for `recent_changes` (default: 7) |
-
 ### `context_store`
-Save a fact, decision, or note into the appropriate memory layer.
+
+Store content into the appropriate memory layer. Pass either a single 'content' + 'memory_layer', or 'items' to store several facts in one call (preferred when saving multiple facts — one round-trip instead of N). After storing (L2-L4), same-purpose detection runs automatically: near-identical memories are auto-linked with alternative_to edges (auto_linked in the response); probable matches are returned as suggestions to confirm with context_relate (suggestions in the response). To record a failed approach (so future sessions don't repeat it), store an L2 item with metadata {type: 'attempt', goal, approach, outcome: 'failed', why} — context_brief surfaces these in its recent_attempts section.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `content` | string | ✅ | Content to store |
-| `user_id` | string | ✅ | User identifier |
-| `memory_layer` | L1\|L2\|L3\|L4 | ✅ | Target layer |
-| `importance` | float | — | 0.0–1.0 (default: 0.5) |
-| `session_id` | string | — | Project slug for scoping |
-| `metadata` | object | — | Extra metadata. Conventions: `files: [paths]` → content-hashed for staleness flags; `fact_type` → type-aware GC decay — see [Memory Hygiene](memory-hygiene.md) |
-| `confidence` | float | — | 0.0–1.0 (default: 1.0) |
-| `origin` | string | — | Provenance: `user-stated`, `agent-inferred` (default), `web-search` — see [Session Brief & Trust](session-brief.md) |
-| `items` | array | — | **Batch mode**: store many entries in one call — see [Efficiency Improvements](efficiency-improvements.md) |
-
-To record a failed approach, store an L2 item with `metadata: {type: "attempt", goal, approach, outcome: "failed", why}` — `context_brief` surfaces these so future sessions don't repeat dead ends.
+| `content` | string | no | Content to store (single-item mode) |
+| `items` | array | no | Batch mode: list of items to store in one call. Each item: {content, memory_layer, importance?, metadata?, confidence?, session_id?, origin?}. When provided, top-level content/memory_layer are ignored. |
+| `user_id` | string | yes | User identifier |
+| `importance` | number | no | Importance score 0.0-1.0 |
+| `memory_layer` | `L1` \| `L2` \| `L3` \| `L4` | no |  |
+| `session_id` | string | no | Project namespace or session identifier. Use the project slug (e.g. 'taty-v2') for project-specific facts so they are retrievable in isolation. Use a descriptive slug (e.g. 'user-preferences') for global or cross-project facts. |
+| `metadata` | object | no | Extra metadata (optional). Conventions: files: [paths] — the files this fact refers to; their content hashes are stored so retrieval can flag the memory possibly_stale when they change. fact_type: 'file-location' | 'config' | 'architecture' | 'preference' — controls type-aware TTL decay in GC (file locations expire fast, preferences slowly). type: 'attempt' marks a tried-and-failed record (see description). |
+| `confidence` | number | no | Confidence score 0.0-1.0 (default: 1.0) |
+| `origin` | `user-stated` \| `agent-inferred` \| `ingested-from-file` \| `ingested-from-web` \| `web-search` | no | Provenance of this fact: 'user-stated' when the user said it directly, 'agent-inferred' for your own conclusions (default), 'web-search' for facts found online. Ingested content is tagged automatically. Stored in metadata.origin and returned on retrieval so trust level is always visible. |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_retrieve`
-Hybrid semantic search across memory layers — dense + BM25 + MMR + score fusion.
+
+Retrieve relevant context items for the current query from all memory layers.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | string | ✅ | Search query |
-| `user_id` | string | ✅ | User identifier |
-| `session_id` | string | — | Project slug to scope results |
-| `project` | string | — | Qdrant-level project filter |
-| `top_k` | integer | — | Max results (default: 10) |
-| `memory_layers` | array | — | Filter to specific layers (default: all) |
-| `expand_relations` | boolean | — | Also return 1-hop related memories, tagged `via_relation` — see [Memory Relations](memory-relations.md) |
-
-When the result is empty, the response includes a `diagnostics` block (item counts by layer, filters applied, and a hint) that distinguishes "nothing stored" from "filters/layers missed" — see [Session Brief & Trust](session-brief.md).
+| `query` | string | yes | Current question or topic |
+| `user_id` | string | yes | User identifier |
+| `session_id` | string | no | Project namespace or session identifier. Pass the project slug (e.g. 'taty-v2') to scope retrieval to that project only and avoid cross-project contamination. Omit only for cross-project or global queries. |
+| `project` | string | no | Project name to filter results by (e.g. 'taty-v2'). Filters at the Qdrant level for efficient project-scoped retrieval. Can be used alongside or instead of session_id. |
+| `top_k` | integer | no | Max items to return (default: 10) |
+| `memory_layers` | array | no | Which memory layers to query (default: all) |
+| `expand_relations` | boolean | no | Also include memories linked to the retrieved items via relations (1-hop, marked with via_relation). Default: false |
 
 ### `context_summarize`
-Compress session working memory into an L2 episodic summary via LLM. Runs async.
+
+Summarize the working memory for a session. Runs async, off the critical path.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `session_id` | string | ✅ | Session to summarize |
-| `user_id` | string | ✅ | User identifier |
-| `max_tokens` | integer | — | Summary length cap (default: 500) |
-| `focus` | string | — | What to focus on |
+| `session_id` | string | yes | Session to summarize |
+| `user_id` | string | yes | User identifier |
+| `max_tokens` | integer | no | Max summary length in tokens (default: 500) |
+| `focus` | string | no | What to focus on in the summary (optional) |
 
 ### `context_score`
-Re-rank a list of context items by relevance to a query.
+
+Score a list of context items by relevance to a query.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `items` | array | ✅ | Context items to score |
-| `query` | string | ✅ | Query to score against |
+| `items` | array | yes | List of context items to score |
+| `query` | string | yes | Query to score against |
 
----
+## Code & Doc Index
+
+### `context_index`
+
+Index a file, directory, or glob into the project's persistent code/doc index (a separate ctx_<slug>__index collection — never mixed into memories). Idempotent: unchanged files are skipped via content hashes, changed files re-embed only their changed chunks, and stale chunks are swept. Respects .gitignore in git repos. Requires an active or explicit project.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | yes | Absolute path to a file or directory, or a glob pattern |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug (optional — defaults to the active project; required if none is set) |
+| `force` | boolean | no | Re-embed files even if their hash is unchanged (default: false) |
+| `max_files` | integer | no | Cap on files per call (default: 500) |
+
+### `context_index_search`
+
+Hybrid search over the project's persistent code/doc index: dense semantic search fused with exact-symbol and full-text keyword matching, so exact identifiers (function/class names) are found even when semantic search misses them. Returns snippets with path, symbol, and line numbers, flagged possibly_stale when the file changed on disk since indexing. Backtick an identifier in the query for an exact-match boost.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | yes | Natural-language question or an identifier (backtick exact symbols for a boost) |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug (optional) |
+| `top_k` | integer | no | Max hits (default: 5) |
+| `language` | string | no | Filter by language, e.g. 'py', 'ts' (optional) |
+| `path_prefix` | string | no | Only hits whose path starts with this prefix (optional) |
+
+### `context_index_status`
+
+Report what's in the project's code/doc index: file and chunk counts, per-language breakdown, last index time, and which indexed files are stale (changed) or missing (deleted on disk) since indexing.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug (optional) |
+| `check_staleness` | boolean | no | Re-hash indexed files against disk (default: true, capped at 200 files) |
 
 ## Knowledge
 
 ### `context_checkpoint`
-Save a named, pinned L3 snapshot with importance=1.0. Never excluded from retrieval.
+
+Save a named checkpoint — a pinned, high-importance L3 memory snapshot of a decision, milestone, or code state. Use this when something significant happens that should be permanently remembered and retrievable by name.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | ✅ | Checkpoint name |
-| `content` | string | ✅ | What to snapshot |
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Project scope |
-| `session_id` | string | — | Project slug |
+| `name` | string | yes | Checkpoint name (e.g. 'v1-auth-refactor', 'before-db-migration') |
+| `content` | string | yes | What to snapshot — decision rationale, code summary, milestone description |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project name for filtering (optional) |
+| `session_id` | string | no | Project namespace or session identifier. Use the project slug (e.g. 'taty-v2') to associate this checkpoint with a specific project. |
 
 ### `context_deprecate`
-Mark an item as superseded. It stays in the store but is excluded from retrieval.
+
+Mark an existing memory item as deprecated. The item is NOT deleted — it stays in the store but is excluded from normal retrieval. Use this when a checkpoint or fact is superseded by a newer one. Pass superseded_by to record which item replaces it (creates a 'supersedes' relation automatically).
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `item_id` | string | ✅ | ID of item to deprecate |
-| `user_id` | string | ✅ | User identifier |
-| `reason` | string | — | Why it's deprecated |
-| `superseded_by` | string | — | ID of the replacing item — also creates a `supersedes` relation edge |
+| `item_id` | string | yes | ID of the item to deprecate |
+| `user_id` | string | yes | User identifier |
+| `reason` | string | no | Why this item is being deprecated (optional) |
+| `superseded_by` | string | no | ID of the newer item that replaces this one — records a 'supersedes' relation (new item → deprecated item) so replacement history is traceable (optional) |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_list`
-Browse stored items without vector search — for reviewing checkpoints or finding items to deprecate.
+
+List memory items without a vector search — for browsing checkpoints, reviewing what's stored, or finding items to deprecate.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `memory_layer` | L1\|L2\|L3\|L4 | — | Filter by layer |
-| `checkpoints_only` | boolean | — | Return only checkpoints |
-| `include_deprecated` | boolean | — | Include deprecated items |
-| `project` | string | — | Filter by project |
-| `limit` | integer | — | Max results (default: 50) |
+| `user_id` | string | yes | User identifier |
+| `memory_layer` | `L1` \| `L2` \| `L3` \| `L4` | no | Filter by memory layer (optional) |
+| `checkpoints_only` | boolean | no | Return only checkpoint items (default: false) |
+| `include_deprecated` | boolean | no | Include deprecated items (default: false) |
+| `project` | string | no | Filter by project name (optional) |
+| `limit` | integer | no | Max items to return (default: 50) |
 
 ### `context_ingest`
-Parse any file or URL into chunks and store them automatically.
 
-Supports: `.docx`, `.pdf`, `.md`, `.py`, `.ts`, `.go`, `.rs`, and any `http(s)://` URL.
+Parse and ingest any file or URL into memory as chunks. Supports .docx, .pdf, .md, source code files (.py, .js, .ts, .go, .rs, ...), and any http(s):// URL. Each chunk is embedded and stored automatically.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | string | ✅ | Absolute file path or URL |
-| `user_id` | string | ✅ | User identifier |
-| `memory_layer` | L1\|L2\|L3\|L4 | — | Target layer (default: L3) |
-| `importance` | float | — | 0.0–1.0 (default: 0.8) |
-| `project` | string | — | Project tag |
-| `session_id` | string | — | Project slug |
-
----
+| `source` | string | yes | Absolute file path or URL to ingest |
+| `user_id` | string | yes | User identifier |
+| `memory_layer` | `L1` \| `L2` \| `L3` \| `L4` | no | Memory layer to store chunks in (default: L3) |
+| `importance` | number | no | Importance score 0.0-1.0 (default: 0.8) |
+| `project` | string | no | Project name tag for filtering (optional) |
+| `session_id` | string | no | Project namespace. Always set this to the project name (e.g. 'taty-v2') so ingested chunks are scoped to that project and retrievable in isolation without cross-project contamination. |
 
 ## Relations & Graph
 
-> Full guides: [Memory Relations](memory-relations.md) · [Memory Visualization](memory-visualization.md)
-
 ### `context_relate`
-Link two memories with a typed, directed edge (`related_to`, `supersedes`, `part_of`, `depends_on`, `caused_by`, or custom).
+
+Link two memory items with a typed relation (source → target) so they can be retrieved and handled together. Known types: related_to, supersedes, part_of, depends_on, caused_by — custom types are also accepted.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source_id` | string | ✅ | Item the edge starts from |
-| `target_id` | string | ✅ | Item the edge points to |
-| `user_id` | string | ✅ | User identifier |
-| `relation_type` | string | — | Edge type (default: `related_to`) |
-| `metadata` | object | — | Extra context on the edge |
+| `source_id` | string | yes | ID of the source memory item |
+| `target_id` | string | yes | ID of the target memory item |
+| `relation_type` | string | no | Relation type (default: related_to). Known: related_to, supersedes, part_of, depends_on, caused_by. Custom strings allowed. |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project name tag (optional) |
+| `metadata` | object | no | Extra metadata for the edge (optional) |
 
 ### `context_unrelate`
-Delete edge(s) by relation ID or by source+target pair.
+
+Remove a relation between two memory items — by relation_id, or by the source_id + target_id pair (optionally narrowed by relation_type).
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `relation_id` | string | — | Exact edge to delete |
-| `source_id` / `target_id` | string | — | Endpoint pair (alternative) |
-| `relation_type` | string | — | Narrow deletion to this type |
+| `relation_id` | string | no | ID of the relation to remove |
+| `source_id` | string | no | Source item ID (used with target_id when relation_id is not given) |
+| `target_id` | string | no | Target item ID (used with source_id when relation_id is not given) |
+| `relation_type` | string | no | Only remove edges of this type (optional, with source_id/target_id) |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_related`
-List memories linked to an item plus the connecting edges. Follows supersedes chains into deprecated items.
+
+List the memories linked to an item via relations, with the connecting edges. Follows supersedes chains into deprecated items (direct lookup, not search).
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `item_id` | string | ✅ | Anchor item |
-| `user_id` | string | ✅ | User identifier |
-| `relation_type` | string | — | Only follow this edge type |
-| `direction` | string | — | `out`, `in`, or `both` (default) |
+| `item_id` | string | yes | Memory item ID whose neighbors to fetch |
+| `user_id` | string | yes | User identifier |
+| `relation_type` | string | no | Only follow edges of this type (optional) |
+| `direction` | `out` \| `in` \| `both` | no | Edge direction relative to item_id (default: both) |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_get`
-Fetch one memory directly by ID — no vector search. Checks the project collection, then `ctx_users`.
+
+Fetch a single memory item directly by its ID — no vector search. Works for deprecated items too. Use when you already know the item id (e.g. from a previous store/retrieve/related call).
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `item_id` | string | ✅ | Item to fetch |
-| `user_id` | string | ✅ | User identifier |
+| `item_id` | string | yes | Memory item ID |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_visualize`
-Render the memory graph as a Mermaid flowchart — nodes colored by layer, deprecated dashed, pinned bold, edges labeled by type.
+
+Render the memory graph (items + relation edges) as a Mermaid flowchart. Nodes are colored by memory layer (L1-L4), deprecated items are dashed, pinned items get a thick border; edges are labeled with their relation type. The returned mermaid string renders natively in Claude and any Mermaid viewer. Best for up to ~50 nodes.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Filter by project |
-| `memory_layer` | L1\|L2\|L3\|L4 | — | Filter by layer (L4 reads `ctx_users`) |
-| `relations_only` | boolean | — | Hide isolated nodes |
-| `include_deprecated` | boolean | — | Show deprecated items (default: true) |
-| `direction` | string | — | `LR` (default) or `TD` |
-| `limit` | integer | — | Max items (default: 50) |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Filter items by project tag (optional) |
+| `memory_layer` | `L1` \| `L2` \| `L3` \| `L4` | no | Only include items from this layer (optional; L4 reads the shared user collection) |
+| `relations_only` | boolean | no | Only show items that have at least one relation edge (default: false) |
+| `include_deprecated` | boolean | no | Include deprecated items, e.g. supersedes targets (default: true) |
+| `direction` | `LR` \| `TD` | no | Graph layout direction: left-to-right or top-down (default: LR) |
+| `limit` | integer | no | Max items to include (default: 50) |
 
 ### `context_alternatives`
-Answer "what can I use for X?" — semantic search for a purpose, grouping each match with its alternatives (`alternative_to` / `used_for` neighbors). Alternatives are detected automatically at store time — see [Alternative Detection](alternatives.md).
+
+Answer 'what can I use for X?' — semantic search for a purpose (e.g. 'approve button'), returning each matching memory grouped with its alternatives (items linked via alternative_to or used_for edges). Alternatives are detected automatically at store time: near-identical purposes are auto-linked, probable matches are returned as suggested_relations in the store response.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `query` | string | ✅ | Purpose to search, e.g. "approve button component" |
-| `top_k` | integer | — | Max groups (default: 5) |
-
----
+| `user_id` | string | yes | User identifier |
+| `query` | string | yes | The purpose to search for, e.g. 'approve button component' |
+| `top_k` | integer | no | Max groups to return (default: 5) |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ## Tasks
 
 ### `context_task_add`
-Add a persistent task that survives across sessions.
+
+Add a new task to remember for later. Use this when the user mentions something they want to do later, a feature to build, or any pending work item.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `title` | string | ✅ | Short task title |
-| `user_id` | string | ✅ | User identifier |
-| `description` | string | — | Detailed description |
-| `priority` | low\|medium\|high | — | Priority (default: medium) |
-| `project` | string | — | Project scope |
+| `title` | string | yes | Short task title |
+| `user_id` | string | yes | User identifier |
+| `description` | string | no | Detailed description (optional) |
+| `priority` | `low` \| `medium` \| `high` | no | Priority (default: medium) |
+| `project` | string | no | Project name for filtering (optional) |
 
 ### `context_task_list`
-List tasks, optionally filtered by status, priority, or project.
+
+List pending or all tasks. Call this at the start of a session to see what work is waiting.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `status` | pending\|in_progress\|done\|cancelled | — | Filter by status |
-| `priority` | low\|medium\|high | — | Filter by priority |
-| `project` | string | — | Filter by project |
-| `limit` | integer | — | Max results (default: 50) |
+| `user_id` | string | yes | User identifier |
+| `status` | `pending` \| `in_progress` \| `done` \| `cancelled` | no | Filter by status (default: pending) |
+| `priority` | `low` \| `medium` \| `high` | no | Filter by priority (optional) |
+| `project` | string | no | Filter by project (optional) |
+| `limit` | integer | no | Max tasks to return (default: 50) |
 
 ### `context_task_update`
-Update a task's status, priority, title, or description.
+
+Update a task — change its status, priority, title, or description.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `task_id` | string | ✅ | Task ID |
-| `user_id` | string | ✅ | User identifier |
-| `status` | pending\|in_progress\|done\|cancelled | — | New status |
-| `priority` | low\|medium\|high | — | New priority |
-| `title` | string | — | Updated title |
-| `description` | string | — | Updated description |
-
----
+| `task_id` | string | yes | Task ID to update |
+| `user_id` | string | yes | User identifier |
+| `status` | `pending` \| `in_progress` \| `done` \| `cancelled` | no | New status |
+| `priority` | `low` \| `medium` \| `high` | no | New priority |
+| `title` | string | no | Updated title |
+| `description` | string | no | Updated description |
 
 ## Skills
 
-Skills are named agent role definitions (system prompt + capabilities) stored in PostgreSQL and indexed in Qdrant for RAG-based discovery.
-
 ### `context_skill_store`
-Save a skill definition. Writes full content to PostgreSQL and embeds only the description into Qdrant L3.
+
+Save a skill definition. Writes full content to PostgreSQL and embeds only the description into Qdrant L3 for RAG matching.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | ✅ | Skill name (e.g. `nodejs-developer`) |
-| `description` | string | ✅ | One-line description for RAG matching |
-| `content` | string | ✅ | Full skill content (system prompt + instructions) |
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Project scope (null = global) |
-| `frontmatter` | object | — | Parsed YAML frontmatter fields |
+| `name` | string | yes | Skill name (e.g. 'nodejs-developer') |
+| `description` | string | yes | One-line description used for RAG matching |
+| `content` | string | yes | Full skill content (system prompt + instructions) |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project scope (optional, null = global) |
+| `frontmatter` | object | no | Parsed YAML frontmatter fields (optional) |
 
 ### `context_skill_find`
-RAG search — embed query → search Qdrant L3 (type=skill) → fetch full content from PostgreSQL.
+
+RAG search for the best matching skill(s) for a given task. Embeds the query, searches Qdrant L3 filtered by type='skill', then fetches full content from PostgreSQL.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | string | ✅ | Task description to match |
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Limit to a specific project |
-| `top_k` | integer | — | Max results (default: 3) |
+| `query` | string | yes | Task description to match against stored skills |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Limit search to a specific project (optional) |
+| `top_k` | integer | no | Max number of skills to return (default: 3) |
 
 ### `context_skill_get`
+
 Fetch a skill by exact name or slug from PostgreSQL.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | ✅ | Skill name or slug |
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Project scope filter |
+| `name` | string | yes | Skill name or slug to look up |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project scope filter (optional) |
 
 ### `context_skill_list`
-List all stored skills for a user, optionally scoped to a project.
+
+List all stored skills for the user, optionally scoped to a project.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-| `project` | string | — | Filter by project |
-| `limit` | integer | — | Max results (default: 50) |
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Filter by project (optional) |
+| `limit` | integer | no | Max skills to return (default: 50) |
 
 ### `context_skill_delete`
+
 Remove a skill from PostgreSQL and deprecate its Qdrant embedding.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | ✅ | Skill name or slug |
-| `user_id` | string | ✅ | User identifier |
-
----
+| `name` | string | yes | Skill name or slug to delete |
+| `user_id` | string | yes | User identifier |
 
 ## Maintenance
 
 ### `context_consolidate`
-Manually trigger sleep-style consolidation for the active project: clusters of similar L2 memories merge into one L3 fact; originals are deprecated and linked with `supersedes` edges. The GC daemon also runs this in the background. See [Memory Hygiene](memory-hygiene.md).
+
+Manually trigger sleep-style memory consolidation for the active project: clusters of similar episodic (L2) memories (cosine >= threshold, cluster size >= minimum) are merged into a single L3 fact; the originals are deprecated (never deleted) and linked to the merged item with supersedes edges. Attempt records, pinned items, and existing consolidations are never merged. The GC daemon also runs this automatically in the background when enabled.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-
-## Garbage Collection
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |
 
 ### `context_gc_stats`
-Return GC statistics for the active project — how many items are expiring soon, already deprecated, pending hard delete, or protected from GC.
+
+Return garbage collection statistics for the active project — how many items are expiring soon, already deprecated, pending hard delete, or protected.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `user_id` | string | ✅ | User identifier |
-
-**Response:**
-```json
-{
-  "total_items": 1240,
-  "protected": 310,
-  "expiring_soon_14d": 42,
-  "already_deprecated": 18,
-  "pending_hard_delete": 6,
-  "gc_enabled": true,
-  "l2_base_ttl_days": 30,
-  "l3_base_ttl_days": 90,
-  "grace_period_days": 30
-}
-```
-
-> The GC daemon runs as a separate Docker service (`synatyx-gc`). It does not need to be triggered manually — it runs on a configurable interval (default: 24h). Use `context_gc_stats` to monitor its state.
-
+| `user_id` | string | yes | User identifier |
+| `project` | string | no | Project slug to operate in — overrides the active-project pointer for this call. Pass it in multi-session setups so concurrent sessions in different projects don't route into each other's collections (optional) |

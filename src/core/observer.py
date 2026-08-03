@@ -54,7 +54,8 @@ class RelationObserver:
 
         collections = await self._qdrant.get_all_collections()
         for collection in collections:
-            if collection in _SKIP_COLLECTIONS or not collection.startswith("ctx_"):
+            from src.core.project import is_index_collection
+            if collection in _SKIP_COLLECTIONS or not collection.startswith("ctx_") or is_index_collection(collection):
                 continue
             scoped = self._qdrant.scoped(collection)
             try:

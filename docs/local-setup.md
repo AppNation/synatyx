@@ -58,6 +58,10 @@ make up
 > `Authorization: Bearer <key>`. Leave `AUTH_ADMIN_KEY` empty to disable auth.
 > `/health` is always public.
 
+> **Transports:** the modern **streamable-HTTP** endpoint is `/mcp` — stateless,
+> so deploy restarts never strand a client on a dead session. The legacy SSE
+> endpoint `/mcp/sse` is still served for older clients but is deprecated.
+
 ### Augment Code
 
 Add to your Augment MCP settings:
@@ -65,9 +69,8 @@ Add to your Augment MCP settings:
 ```json
 {
   "mcpServers": {
-    "Synatyx": {
-      "url": "http://localhost:9000/mcp/sse",
-      "type": "sse",
+    "synatyx": {
+      "url": "http://localhost:9000/mcp",
       "headers": { "X-Auth-Key": "your-admin-key" }
     }
   }
@@ -82,7 +85,7 @@ Add to `.cursor/mcp.json` in your project root:
 {
   "mcpServers": {
     "synatyx": {
-      "url": "http://localhost:9000/mcp/sse",
+      "url": "http://localhost:9000/mcp",
       "headers": { "X-Auth-Key": "your-admin-key" }
     }
   }
@@ -97,11 +100,14 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "synatyx": {
-      "url": "http://localhost:9000/mc/sse"
+      "url": "http://localhost:9000/mcp"
     }
   }
 }
 ```
+
+> Older clients that only speak SSE can keep using
+> `"url": "http://localhost:9000/mcp/sse"` with `"type": "sse"`.
 
 ---
 
