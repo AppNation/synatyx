@@ -8,6 +8,8 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 - `context_get_project` — Return the currently active project, or suggest the workspace folder name if none is set
 - `context_brief` — One-call session-start digest: identity (L4), last session (L2), project knowledge (pinned checkpoints + top L3), recent changes, failed attempts, open tasks, and stats — token-budgeted. Call this FIRST in every new conversation
 - `context_store` — Save a piece of information to long-term memory. Also accepts a batch `items` array — prefer one batch call over N single calls when storing several facts. Pass `origin` ('user-stated' | 'agent-inferred' | 'web-search') to record provenance
+- `context_pack` — Assemble ONE prompt-ready, token-budgeted context block for a specific task: relevant memories + relations, pinned checkpoints, dead ends, open tasks, matching skills, code-index hits. Call before any significant task; inject its `rendered` field
+- `context_index` / `context_index_search` / `context_index_status` — Persistent per-project code/doc index (`ctx_<slug>__index`): idempotent indexing, hybrid dense + exact-symbol + full-text search, staleness reporting
 - `context_retrieve` — Search and recall relevant memories before answering. Pass `expand_relations: true` to also pull in memories linked to the results (1-hop, tagged `via_relation`)
 - `context_get` — Fetch one memory directly by its item ID (no vector search)
 - `context_relate` — Link two memories with a typed edge: `related_to`, `supersedes`, `part_of`, `depends_on`, `caused_by`, or any custom type
@@ -146,8 +148,9 @@ This ensures all ingested chunks are retrievable in isolation per project.
 2. If the brief shows no/wrong project → call `context_set_project` with the workspace folder name
 3. If the first message asks about something specific → add one focused `context_retrieve`
 4. Inject the briefing into your reasoning before responding
-5. During the conversation, call `context_store` (with `origin`) whenever a decision or fact is established; record failed approaches as attempt records
-6. At the end of a long session, call `context_summarize` to compress the session into L2
+5. Before starting any significant task → one `context_pack` call with the task as the query; use `context_index_search` for code questions
+6. During the conversation, call `context_store` (with `origin`) whenever a decision or fact is established; record failed approaches as attempt records
+7. At the end of a long session, call `context_summarize` to compress the session into L2
 
 ## General Rules
 

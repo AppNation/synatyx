@@ -12,6 +12,8 @@ You have access to the Synatyx context engine via MCP tools. Use them to persist
 - `context_get_project` — Return the currently active project, or suggest the workspace folder name if none is set
 - `context_store` — Save a piece of information to long-term memory
 - `context_retrieve` — Search and recall relevant memories before answering
+- `context_pack` — Assemble one prompt-ready, token-budgeted context block for a task (memories + relations, checkpoints, attempts, tasks, skills, code hits); call before significant tasks
+- `context_index` / `context_index_search` / `context_index_status` — Persistent per-project code/doc index with hybrid exact-symbol search
 - `context_summarize` — Summarize and compress working memory for a session
 - `context_score` — Re-rank a list of context items by relevance to a query
 - `context_checkpoint` — Save a named, pinned snapshot of a decision or milestone (importance=1.0)
