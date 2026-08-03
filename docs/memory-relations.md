@@ -120,6 +120,23 @@ The recommended flow when a fact changes:
 
 ---
 
+## The Relation Observer — background auto-relate
+
+Store-time alternative detection only sees pairs where the second item is being written *now*. The **relation observer** closes the gap: a background pass in the GC daemon (own interval, default every 6 h) that scans each collection and links similar same-user memories with `related_to` edges.
+
+Deliberately conservative:
+
+- **Only `related_to`** — cosine similarity can say two memories are about the same thing; it cannot infer `depends_on` or `caused_by`. Semantic types stay human/agent-created.
+- **Same user only** — never links items across users.
+- **Existing edges win** — pairs already linked by *any* edge (either direction) are skipped, so store-time detection and manual curation are never duplicated.
+- **Per-item cap** (default 3) counts only observer-created edges — manual edges never block discovery, but the observer can't turn a dense cluster into a fully-connected hairball.
+- **Provenance on every edge** — `metadata: {auto: true, origin: "observer", score}`. Inferred edges are always distinguishable, and a badly-tuned run can be bulk-removed by filtering on `origin`.
+- **Dry-run mode** (`OBSERVER_DRY_RUN=true`) logs would-be edges without writing — use it to tune `OBSERVER_SIMILARITY_THRESHOLD` (default 0.80) against real data before letting it write.
+
+Config via `OBSERVER_*` env vars (see `.env.example`). The dashboard's memory graph is the quickest way to eyeball the result of a pass.
+
+---
+
 ## Lifecycle & GC
 
 - **Soft deprecation keeps edges** — intentionally, so supersedes chains remain traversable.
