@@ -163,12 +163,38 @@
     </div>
   </div>
 
+  <div class="card" style="margin-bottom:16px">
+    <h2>Memory graph</h2>
+    <div class="controls">
+      <label>Collection
+        <select id="sel-graph-collection"></select>
+      </label>
+      <label>User
+        <select id="sel-graph-user"><option value="">all</option></select>
+      </label>
+      <label><input type="checkbox" id="chk-connected"> only connected nodes</label>
+      <span class="sub" id="graph-stats" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div class="legend">
+      <span class="key"><span class="swatch" style="background:var(--l1)"></span>L1 session</span>
+      <span class="key"><span class="swatch" style="background:var(--l2)"></span>L2 episodic</span>
+      <span class="key"><span class="swatch" style="background:var(--l3)"></span>L3 semantic</span>
+      <span class="key"><span class="swatch" style="background:var(--l4)"></span>L4 preferences</span>
+      <span class="key"><span class="swatch" style="background:transparent;border:2px solid var(--ink)"></span>pinned</span>
+      <span class="key"><span class="swatch" style="background:transparent;border:1px dashed var(--muted)"></span>deprecated</span>
+    </div>
+    <div id="graph" style="touch-action:none"></div>
+  </div>
+
   <div class="grid2">
     <div class="card">
       <h2>Recent memories</h2>
       <div class="controls">
         <label>Collection
           <select id="sel-collection"></select>
+        </label>
+        <label>User
+          <select id="sel-user"><option value="">all</option></select>
         </label>
         <label>Layer
           <select id="sel-layer">
@@ -180,7 +206,12 @@
       </div>
       <div id="items"></div>
     </div>
-    <div class="card">
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>Users</h2>
+        <div id="users"></div>
+      </div>
+      <div class="card">
       <h2>Tasks</h2>
       <div class="controls">
         <label>Status
@@ -193,6 +224,7 @@
         </label>
       </div>
       <div id="tasks"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -369,6 +401,203 @@ function renderItems(data) {
     }).join("") + "</tbody></table>";
 }
 
+/* ── users panel ── */
+let selectedUser = "";
+
+function renderUsers(data) {
+  if (!data.users.length) {
+    $("users").innerHTML = `<div class="empty">No users in this collection.</div>`;
+    return;
+  }
+  $("users").innerHTML = data.users.map((u) => `
+    <div class="task" style="cursor:pointer${u.user_id === selectedUser ? ";font-weight:600" : ""}"
+         data-user="${esc(u.user_id)}">
+      <div class="t-title" style="display:flex;justify-content:space-between">
+        <span>${esc(u.user_id)}${u.user_id === selectedUser ? " ✓" : ""}</span>
+        <span style="color:var(--ink-2);font-weight:500">${u.total.toLocaleString()}</span>
+      </div>
+      <div class="meta">${u.active} active · ${u.deprecated} deprecated · ${u.pinned} pinned
+        · L2 ${u.by_layer.L2} / L3 ${u.by_layer.L3} / L4 ${u.by_layer.L4}</div>
+    </div>`).join("");
+  $("users").querySelectorAll("[data-user]").forEach((el) => {
+    el.addEventListener("click", () => {
+      selectedUser = selectedUser === el.dataset.user ? "" : el.dataset.user;
+      $("sel-user").value = selectedUser;
+      $("sel-graph-user").value = selectedUser;
+      renderUsers(data);
+      loadItems();
+      loadGraph();
+    });
+  });
+}
+
+async function loadUsers() {
+  const collection = $("sel-collection").value;
+  if (!collection) { $("users").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
+  try {
+    const data = await api("/dashboard/api/users?" + new URLSearchParams({ collection }));
+    const opts = `<option value="">all</option>` + data.users.map((u) =>
+      `<option value="${esc(u.user_id)}">${esc(u.user_id)}</option>`).join("");
+    for (const id of ["sel-user", "sel-graph-user"]) {
+      const sel = $(id), prev = sel.value;
+      sel.innerHTML = opts;
+      if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    }
+    renderUsers(data);
+  } catch (e) {
+    if (e.message !== "unauthorized") $("users").innerHTML = `<div class="empty">Failed to load users (${esc(e.message)}).</div>`;
+  }
+}
+
+/* ── memory graph: force-directed layout in plain SVG ──
+   Nodes wear the layer identity colors; deprecated nodes are dashed and
+   dimmed; pinned nodes get a thick ink ring. Edges are hairlines with an
+   arrowhead; hovering an edge names its relation type. Nodes are draggable. */
+const GOLDEN_ANGLE = 2.399963;
+
+function forceLayout(nodes, edges, W, H) {
+  nodes.forEach((n, i) => {
+    const r = 40 + 14 * Math.sqrt(i);
+    n.x = W / 2 + r * Math.cos(i * GOLDEN_ANGLE);
+    n.y = H / 2 + (r * 0.6) * Math.sin(i * GOLDEN_ANGLE);
+  });
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const springs = edges
+    .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target) }))
+    .filter((s) => s.a && s.b);
+  const ITER = 260;
+  for (let it = 0; it < ITER; it++) {
+    const cool = 1 - it / ITER;
+    nodes.forEach((n) => { n.vx = 0; n.vy = 0; });
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        const d2 = dx * dx + dy * dy || 0.01;
+        const f = 2600 / d2;
+        const d = Math.sqrt(d2);
+        dx /= d; dy /= d;
+        a.vx += dx * f; a.vy += dy * f;
+        b.vx -= dx * f; b.vy -= dy * f;
+      }
+    }
+    springs.forEach(({ a, b }) => {
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (d - 90) * 0.06;
+      dx /= d; dy /= d;
+      a.vx += dx * f * d; a.vy += dy * f * d;
+      b.vx -= dx * f * d; b.vy -= dy * f * d;
+    });
+    nodes.forEach((n) => {
+      n.vx += (W / 2 - n.x) * 0.012;
+      n.vy += (H / 2 - n.y) * 0.02;
+      const step = 0.04 * cool;
+      n.x += Math.max(-14, Math.min(14, n.vx * step));
+      n.y += Math.max(-14, Math.min(14, n.vy * step));
+      const m = 16;
+      n.x = Math.max(m, Math.min(W - m, n.x));
+      n.y = Math.max(m, Math.min(H - m, n.y));
+    });
+  }
+}
+
+function nodeTip(n) {
+  const flags = [n.checkpoint_name ? "checkpoint" : "", n.is_pinned ? "pinned" : "",
+    n.is_deprecated ? "deprecated" : ""].filter(Boolean).join(" · ");
+  return `<div class='tt-title'>${esc(LAYER_NAME[n.memory_layer] || n.memory_layer)}</div>` +
+    `<div class='tt-row'>${esc(n.label)}</div>` +
+    `<div class='tt-row'>${esc(n.user_id || "")}${flags ? " · " + flags : ""}</div>`;
+}
+
+function renderGraph(data) {
+  let nodes = data.nodes.map((n) => ({ ...n }));
+  let edges = data.edges;
+  if ($("chk-connected").checked) {
+    const linked = new Set();
+    edges.forEach((e) => { linked.add(e.source); linked.add(e.target); });
+    nodes = nodes.filter((n) => linked.has(n.id));
+  }
+  $("graph-stats").textContent = `${nodes.length} nodes · ${edges.length} relations`;
+  if (!nodes.length) {
+    $("graph").innerHTML = `<div class="empty">Nothing to draw${$("chk-connected").checked ? " — no relation edges in this collection yet" : ""}.</div>`;
+    return;
+  }
+
+  const W = 1100, H = Math.max(320, Math.min(560, 130 + nodes.length * 3));
+  forceLayout(nodes, edges, W, H);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+
+  let s = `<svg id="graph-svg" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Memory relation graph">
+    <defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="var(--baseline)"/></marker></defs><g id="edges">`;
+  edges.forEach((e, i) => {
+    const a = byId.get(e.source), b = byId.get(e.target);
+    if (!a || !b) return;
+    const tip = `<div class='tt-title'>${esc(e.type)}</div><div class='tt-row'>${esc(a.label.slice(0, 60))}</div><div class='tt-row'>→ ${esc(b.label.slice(0, 60))}</div>`;
+    s += `<line data-edge="${i}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
+      stroke="var(--baseline)" stroke-width="1" marker-end="url(#arrow)"/>
+      <line data-edge-hit="${i}" data-tt="${esc(tip)}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"
+      stroke="transparent" stroke-width="10"/>`;
+  });
+  s += `</g><g id="nodes">`;
+  nodes.forEach((n) => {
+    const r = 6 + (Number(n.importance) || 0.5) * 6;
+    const fill = LAYER_COLOR[n.memory_layer] || "var(--muted)";
+    const style = n.is_deprecated
+      ? `fill="${fill}" fill-opacity="0.25" stroke="var(--muted)" stroke-dasharray="3 2" stroke-width="1.5"`
+      : n.is_pinned
+        ? `fill="${fill}" stroke="var(--ink)" stroke-width="2.5"`
+        : `fill="${fill}" stroke="var(--surface)" stroke-width="2"`;
+    s += `<circle data-node="${esc(n.id)}" data-tt="${esc(nodeTip(n))}" cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r.toFixed(1)}" ${style} style="cursor:grab"/>`;
+  });
+  s += `</g></svg>`;
+  $("graph").innerHTML = s;
+  bindTooltips($("graph"));
+
+  /* drag: move a node and every edge that touches it */
+  const svg = $("graph").querySelector("#graph-svg");
+  let drag = null;
+  const toSvg = (evt) => {
+    const rect = svg.getBoundingClientRect();
+    return { x: (evt.clientX - rect.left) * W / rect.width, y: (evt.clientY - rect.top) * H / rect.height };
+  };
+  svg.querySelectorAll("[data-node]").forEach((c) => {
+    c.addEventListener("pointerdown", (evt) => {
+      drag = { circle: c, id: c.dataset.node };
+      c.setPointerCapture(evt.pointerId);
+      evt.preventDefault();
+    });
+  });
+  svg.addEventListener("pointermove", (evt) => {
+    if (!drag) return;
+    const p = toSvg(evt);
+    drag.circle.setAttribute("cx", p.x.toFixed(1));
+    drag.circle.setAttribute("cy", p.y.toFixed(1));
+    edges.forEach((e, i) => {
+      if (e.source !== drag.id && e.target !== drag.id) return;
+      const end = e.source === drag.id ? "1" : "2";
+      svg.querySelectorAll(`[data-edge="${i}"], [data-edge-hit="${i}"]`).forEach((line) => {
+        line.setAttribute("x" + end, p.x.toFixed(1));
+        line.setAttribute("y" + end, p.y.toFixed(1));
+      });
+    });
+  });
+  svg.addEventListener("pointerup", () => { drag = null; });
+}
+
+async function loadGraph() {
+  const collection = $("sel-graph-collection").value;
+  if (!collection) { $("graph").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
+  const params = new URLSearchParams({ collection });
+  if ($("sel-graph-user").value) params.set("user", $("sel-graph-user").value);
+  try {
+    renderGraph(await api("/dashboard/api/graph?" + params));
+  } catch (e) {
+    if (e.message !== "unauthorized") $("graph").innerHTML = `<div class="empty">Failed to load graph (${esc(e.message)}).</div>`;
+  }
+}
+
 /* ── tasks ── */
 const PRIO_COLOR = { high: "var(--status-serious)", medium: "var(--status-warning)", low: "var(--muted)" };
 function renderTasks(data) {
@@ -395,6 +624,7 @@ async function loadItems() {
   if (!collection) { $("items").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
   const params = new URLSearchParams({ collection, limit: "50" });
   if ($("sel-layer").value) params.set("layer", $("sel-layer").value);
+  if ($("sel-user").value) params.set("user", $("sel-user").value);
   if ($("chk-deprecated").checked) params.set("include_deprecated", "true");
   try {
     renderItems(await api("/dashboard/api/items?" + params));
@@ -433,20 +663,38 @@ async function boot() {
   renderLayerChart(overview.totals.by_layer);
   renderStackChart(overview.collections);
 
-  const sel = $("sel-collection");
-  const prev = sel.value;
-  sel.innerHTML = overview.collections.map((c) =>
+  const opts = overview.collections.map((c) =>
     `<option value="${esc(c.collection)}">${esc(c.slug)} (${c.total})</option>`).join("");
-  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  const biggest = overview.collections.reduce(
+    (a, c) => (c.total > (a?.total ?? -1) ? c : a), null);
+  for (const id of ["sel-collection", "sel-graph-collection"]) {
+    const sel = $(id);
+    const prev = sel.value;
+    sel.innerHTML = opts;
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    else if (biggest) sel.value = biggest.collection;
+  }
 
   $("updated").textContent = "updated " + new Date().toLocaleTimeString();
-  await Promise.all([loadItems(), loadTasks()]);
+  await Promise.all([loadItems(), loadTasks(), loadUsers(), loadGraph()]);
 }
 
 $("refresh").addEventListener("click", boot);
-$("sel-collection").addEventListener("change", loadItems);
+$("sel-collection").addEventListener("change", () => {
+  $("sel-graph-collection").value = $("sel-collection").value;
+  selectedUser = "";
+  loadItems(); loadUsers(); loadGraph();
+});
+$("sel-graph-collection").addEventListener("change", () => {
+  $("sel-collection").value = $("sel-graph-collection").value;
+  selectedUser = "";
+  loadItems(); loadUsers(); loadGraph();
+});
 $("sel-layer").addEventListener("change", loadItems);
+$("sel-user").addEventListener("change", () => { selectedUser = $("sel-user").value; loadItems(); loadUsers(); });
+$("sel-graph-user").addEventListener("change", loadGraph);
 $("chk-deprecated").addEventListener("change", loadItems);
+$("chk-connected").addEventListener("change", loadGraph);
 $("sel-status").addEventListener("change", loadTasks);
 
 boot();
