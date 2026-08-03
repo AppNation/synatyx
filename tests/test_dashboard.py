@@ -6,8 +6,18 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from src.models.context import ContextItem
+from src.models.memory_layer import MemoryLayer
+from src.models.relation import MemoryRelation
 from src.models.task import Task, TaskPriority, TaskStatus
-from src.transports.mcp.dashboard import api_items, api_overview, api_tasks, dashboard_page
+from src.transports.mcp.dashboard import (
+    api_graph,
+    api_items,
+    api_overview,
+    api_tasks,
+    api_users,
+    dashboard_page,
+)
 
 
 class FakeQdrant:
@@ -54,10 +64,29 @@ class FakeQdrant:
             items = [i for i in items if i.get("memory_layer") == memory_layer.value]
         return items[:limit], None
 
+    async def get_by_id(self, item_id: str) -> ContextItem | None:
+        for p in self._collections[self._scope]:
+            if p.get("_id") == item_id:
+                return ContextItem(
+                    id=item_id,
+                    user_id=p.get("user_id", ""),
+                    session_id=p.get("session_id"),
+                    content=p.get("content", ""),
+                    memory_layer=MemoryLayer(p.get("memory_layer", "L3")),
+                    importance=p.get("importance", 0.5),
+                    is_pinned=p.get("is_pinned", False),
+                    is_deprecated=p.get("is_deprecated", False),
+                    metadata=p.get("metadata", {}),
+                )
+        return None
+
 
 class FakePostgres:
-    def __init__(self, tasks: list[Task]) -> None:
+    def __init__(
+        self, tasks: list[Task], relations: list[MemoryRelation] | None = None
+    ) -> None:
         self._tasks = tasks
+        self._relations = relations or []
 
     async def task_list_all(
         self, status: TaskStatus | None = None, limit: int = 50
@@ -66,6 +95,16 @@ class FakePostgres:
         if status:
             tasks = [t for t in tasks if t.status == status]
         return tasks[:limit]
+
+    async def relation_list_all(
+        self, item_ids: list[str], limit: int = 500
+    ) -> list[MemoryRelation]:
+        ids = set(item_ids)
+        return [
+            r
+            for r in self._relations
+            if r.source_item_id in ids or r.target_item_id in ids
+        ][:limit]
 
 
 def _item(**overrides: Any) -> dict[str, Any]:
@@ -86,17 +125,23 @@ def _item(**overrides: Any) -> dict[str, Any]:
     return base
 
 
-def _client(collections: dict[str, list[dict[str, Any]]], tasks: list[Task]) -> TestClient:
+def _client(
+    collections: dict[str, list[dict[str, Any]]],
+    tasks: list[Task],
+    relations: list[MemoryRelation] | None = None,
+) -> TestClient:
     app = Starlette(
         routes=[
             Route("/dashboard", dashboard_page),
             Route("/dashboard/api/overview", api_overview),
             Route("/dashboard/api/items", api_items),
             Route("/dashboard/api/tasks", api_tasks),
+            Route("/dashboard/api/users", api_users),
+            Route("/dashboard/api/graph", api_graph),
         ]
     )
     app.state.qdrant = FakeQdrant(collections)
-    app.state.postgres = FakePostgres(tasks)
+    app.state.postgres = FakePostgres(tasks, relations)
     return TestClient(app)
 
 
@@ -108,6 +153,7 @@ def _sample_client() -> TestClient:
                 _id="00000000-0000-0000-0000-000000000002",
                 content="old fact",
                 is_deprecated=True,
+                user_id="u2",
                 created_at="2026-07-01T10:00:00+00:00",
             ),
             _item(
@@ -200,6 +246,99 @@ def test_tasks_filtered_by_status() -> None:
     assert res.json()["count"] == 2
 
     assert client.get("/dashboard/api/tasks", params={"status": "bogus"}).status_code == 400
+
+
+def _graph_client() -> TestClient:
+    collections = {
+        "ctx_synatyx": [
+            _item(),
+            _item(
+                _id="00000000-0000-0000-0000-000000000002",
+                content="old fact",
+                is_deprecated=True,
+                user_id="u2",
+            ),
+            _item(
+                _id="00000000-0000-0000-0000-000000000003",
+                content="newer fact",
+                memory_layer="L2",
+                is_pinned=True,
+            ),
+        ],
+    }
+    relations = [
+        MemoryRelation(
+            user_id="u1",
+            source_item_id="00000000-0000-0000-0000-000000000003",
+            target_item_id="00000000-0000-0000-0000-000000000002",
+            relation_type="supersedes",
+        ),
+        MemoryRelation(
+            user_id="u1",
+            source_item_id="00000000-0000-0000-0000-000000000001",
+            target_item_id="99999999-9999-9999-9999-999999999999",
+            relation_type="depends_on",
+        ),
+    ]
+    return _client(collections, [], relations)
+
+
+def test_users_aggregates_per_user() -> None:
+    res = _sample_client().get("/dashboard/api/users", params={"collection": "ctx_synatyx"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["count"] == 2
+    u1 = next(u for u in data["users"] if u["user_id"] == "u1")
+    assert u1["total"] == 2 and u1["active"] == 2 and u1["pinned"] == 1
+    assert u1["by_layer"]["L2"] == 1 and u1["by_layer"]["L3"] == 1
+    u2 = next(u for u in data["users"] if u["user_id"] == "u2")
+    assert u2["total"] == 1 and u2["deprecated"] == 1
+
+    assert (
+        _sample_client()
+        .get("/dashboard/api/users", params={"collection": "ctx_nope"})
+        .status_code
+        == 400
+    )
+
+
+def test_items_user_filter() -> None:
+    res = _sample_client().get(
+        "/dashboard/api/items",
+        params={"collection": "ctx_synatyx", "user": "u2", "include_deprecated": "true"},
+    )
+    assert [i["content"] for i in res.json()["items"]] == ["old fact"]
+
+
+def test_graph_returns_nodes_and_edges() -> None:
+    res = _graph_client().get("/dashboard/api/graph", params={"collection": "ctx_synatyx"})
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["node_count"] == 3
+    # The supersedes edge survives (both endpoints present); the edge to the
+    # unknown item is dropped after hydration fails to find it.
+    assert data["edge_count"] == 1
+    edge = data["edges"][0]
+    assert edge["type"] == "supersedes"
+    assert edge["source"] == "00000000-0000-0000-0000-000000000003"
+
+    deprecated = next(n for n in data["nodes"] if n["is_deprecated"])
+    assert deprecated["id"] == "00000000-0000-0000-0000-000000000002"
+    pinned = next(n for n in data["nodes"] if n["is_pinned"])
+    assert pinned["memory_layer"] == "L2"
+
+
+def test_graph_user_filter_keeps_hydrated_endpoints() -> None:
+    res = _graph_client().get(
+        "/dashboard/api/graph", params={"collection": "ctx_synatyx", "user": "u1"}
+    )
+    data = res.json()
+    # u2's deprecated item is filtered out of the scan but hydrated back in
+    # because u1's supersedes edge points at it.
+    assert data["edge_count"] == 1
+    ids = {n["id"] for n in data["nodes"]}
+    assert "00000000-0000-0000-0000-000000000002" in ids
 
 
 def test_endpoints_503_before_lifespan() -> None:
