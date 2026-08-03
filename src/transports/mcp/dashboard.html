@@ -630,11 +630,22 @@ function render3D(data, opts) {
     return;
   }
 
-  const R = layout3d(nodes, edges);
+  layout3d(nodes, edges);
+  /* actual cloud extent — the spring pass contracts nodes well inside the
+     nominal layout radius, so fit and rings must measure, not assume */
+  const cloudR = nodes.reduce((m, n) => Math.max(m, Math.hypot(n.x, n.y, n.z)), 1);
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const idxById = new Map(nodes.map((n, i) => [n.id, i]));
   const links = edges
     .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target), type: e.type }))
     .filter((l) => l.a && l.b);
+
+  /* per-node drift — tiny phase-shifted orbits keep the cloud alive */
+  nodes.forEach((n) => {
+    n._ph = Math.random() * Math.PI * 2;
+    n._ph2 = Math.random() * Math.PI * 2;
+    n._amp = 2 + Math.random() * 3.5;
+  });
 
   /* adjacency for selection highlighting */
   const adj = new Map();
@@ -650,9 +661,16 @@ function render3D(data, opts) {
   const HIGHLIGHT = opts.highlight || "#67e8f9";
 
   let yaw = 0.6, pitch = 0.26, zoom = 1, panX = 0, panY = 0;
+  let baseZoom = 1, userZoomed = false;
   let dragging = null, hovering = false, selectedId = null;
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let proj = [];
+
+  const wob = (n, t) => reduced ? n : {
+    x: n.x + Math.sin(t * 0.7 + n._ph) * n._amp,
+    y: n.y + Math.cos(t * 0.9 + n._ph2) * n._amp,
+    z: n.z + Math.sin(t * 0.8 + n._ph + n._ph2) * n._amp,
+  };
 
   function project(p, W, H) {
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -674,7 +692,7 @@ function render3D(data, opts) {
     /* wireframe orbit rings ground the cloud in space */
     ctx.strokeStyle = "rgba(167,139,250,0.16)";
     ctx.lineWidth = 1;
-    for (const ringR of [R * 0.6, R * 0.9, R * 1.18]) {
+    for (const ringR of [cloudR * 0.62, cloudR * 0.92, cloudR * 1.18]) {
       ctx.beginPath();
       for (let a = 0; a <= 72; a++) {
         const ang = (a / 72) * Math.PI * 2;
@@ -684,12 +702,13 @@ function render3D(data, opts) {
       ctx.stroke();
     }
 
-    proj = nodes.map((n) => project(n, W, H));
+    const t = performance.now() / 1000;
+    proj = nodes.map((n) => project(wob(n, t), W, H));
 
     const neighbors = selectedId ? (adj.get(selectedId) || new Set()) : null;
 
     links.forEach((l) => {
-      const A = project(l.a, W, H), B = project(l.b, W, H);
+      const A = proj[idxById.get(l.a.id)], B = proj[idxById.get(l.b.id)];
       l.px = A; l.py = B;
       const touching = selectedId && (l.a.id === selectedId || l.b.id === selectedId);
       let alpha = 0.18 + 0.35 * (A.d + B.d) / 2;
@@ -743,6 +762,10 @@ function render3D(data, opts) {
     const w = box.clientWidth || 1100;
     canvas.width = w * DPR; canvas.height = CSS_H * DPR;
     canvas.style.height = CSS_H + "px";
+    /* fit the cloud to the canvas — R is the layout sphere radius, which
+       projects to ≈R px at z=0, so scale it to ~84% of the short side */
+    baseZoom = Math.max(0.4, Math.min(3.5, (Math.min(w, CSS_H) * 0.42) / cloudR));
+    if (!userZoomed) zoom = baseZoom;
     draw();
   }
 
@@ -796,14 +819,16 @@ function render3D(data, opts) {
     }
   });
   canvas.addEventListener("dblclick", () => {
-    yaw = 0.6; pitch = 0.26; zoom = 1; panX = 0; panY = 0; selectedId = null;
+    yaw = 0.6; pitch = 0.26; zoom = baseZoom; userZoomed = false;
+    panX = 0; panY = 0; selectedId = null;
     if (reduced) draw();
   });
   canvas.addEventListener("wheel", (evt) => {
     evt.preventDefault();
     const p = toLocal(evt);
     const W = canvas.width / DPR, H = canvas.height / DPR;
-    const next = Math.max(0.35, Math.min(4, zoom * Math.exp(-evt.deltaY * 0.0014)));
+    userZoomed = true;
+    const next = Math.max(0.25, Math.min(6, zoom * Math.exp(-evt.deltaY * 0.0014)));
     /* keep the point under the cursor fixed while zooming */
     const scale = next / zoom;
     panX = (p.x - W / 2) - ((p.x - W / 2) - panX) * scale;
