@@ -287,6 +287,20 @@ class PostgresStorage:
             result = await session.execute(stmt)
             return [self._row_to_task(r) for r in result.scalars().all()]
 
+    async def task_list_all(
+        self,
+        status: TaskStatus | None = None,
+        limit: int = 50,
+    ) -> list[Task]:
+        """List tasks across all users — dashboard use only."""
+        async with self._session_factory() as session:
+            stmt = select(TaskRow)
+            if status:
+                stmt = stmt.where(TaskRow.status == status.value)
+            stmt = stmt.order_by(TaskRow.created_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return [self._row_to_task(r) for r in result.scalars().all()]
+
     async def task_update(
         self,
         task_id: str,
