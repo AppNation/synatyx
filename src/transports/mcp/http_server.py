@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
@@ -239,6 +240,19 @@ async def _index_service_from(request: Request):
     return (svc, user_id, body), None
 
 
+async def index_script(_request: Request):
+    """Serve scripts/index_project.py so clients can self-update:
+    curl -s -H "X-Auth-Key: $KEY" $URL/index/script | python3 - --root .
+    Developers never need the Synatyx repo — the script version always
+    matches the server it talks to."""
+    from starlette.responses import PlainTextResponse
+    script = Path(__file__).resolve().parents[3] / "scripts" / "index_project.py"
+    try:
+        return PlainTextResponse(script.read_text(encoding="utf-8"))
+    except OSError:
+        return JSONResponse({"error": "script not available"}, status_code=404)
+
+
 async def index_diff(request: Request) -> JSONResponse:
     ok, err = await _index_service_from(request)
     if err is not None:
@@ -309,6 +323,7 @@ app = Starlette(
         Route("/capture", capture, methods=["POST"]),
         Route("/index/diff", index_diff, methods=["POST"]),
         Route("/index/files", index_files, methods=["POST"]),
+        Route("/index/script", index_script),
         Route("/dashboard", dashboard_page),
         Route("/dashboard/api/overview", api_overview),
         Route("/dashboard/api/items", api_items),
