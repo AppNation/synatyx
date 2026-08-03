@@ -435,6 +435,43 @@ class QdrantStorage:
         )
         return result.count
 
+    async def collection_stats(self) -> dict[str, Any]:
+        """Aggregate counts for the whole collection, no user filter — dashboard use.
+
+        Returns totals plus active-item counts per memory layer.
+        """
+        not_deprecated = FieldCondition(key="is_deprecated", match=MatchValue(value=False))
+
+        async def _count(conditions: list[Any]) -> int:
+            result = await self._client.count(
+                collection_name=self._collection_name,
+                count_filter=Filter(must=conditions) if conditions else None,
+                exact=True,
+            )
+            return result.count
+
+        total = await _count([])
+        active = await _count([not_deprecated])
+        pinned = await _count(
+            [not_deprecated, FieldCondition(key="is_pinned", match=MatchValue(value=True))]
+        )
+        by_layer: dict[str, int] = {}
+        for layer in MemoryLayer:
+            by_layer[layer.value] = await _count(
+                [
+                    not_deprecated,
+                    FieldCondition(key="memory_layer", match=MatchValue(value=layer.value)),
+                ]
+            )
+
+        return {
+            "total": total,
+            "active": active,
+            "deprecated": total - active,
+            "pinned": pinned,
+            "by_layer": by_layer,
+        }
+
     async def ping(self) -> bool:
         try:
             await self._client.get_collections()

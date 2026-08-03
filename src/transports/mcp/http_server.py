@@ -18,6 +18,7 @@ from src.config import settings
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
+from src.transports.mcp.dashboard import api_items, api_overview, api_tasks, dashboard_page
 from src.transports.mcp.server import SynatyxMCPServer
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,13 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     mcp._mcp_server = synatyx._server
     # Expose the server to plain REST routes (e.g. /capture) via app state.
     _app.state.synatyx = synatyx
+    # Raw storages for the dashboard API (read-only aggregate views).
+    _app.state.qdrant = qdrant
+    _app.state.postgres = postgres
+
+    # Background compaction of idle session traces (implicit capture)
+    import asyncio
+    tracking_task = asyncio.create_task(synatyx.run_tracking_loop())
 
     # Background compaction of idle session traces (implicit capture)
     import asyncio
@@ -182,7 +190,9 @@ async def capture(request: Request) -> JSONResponse:
 
 _sse_app = mcp.sse_app()
 
-_PUBLIC_PATHS = frozenset({"/health"})
+# /dashboard serves only the static shell — every data endpoint under
+# /dashboard/api/* stays behind the admin-key middleware.
+_PUBLIC_PATHS = frozenset({"/health", "/dashboard"})
 
 _middleware = []
 if settings.auth.enabled:
@@ -202,6 +212,10 @@ app = Starlette(
     routes=_sse_app.routes + [
         Route("/health", health),
         Route("/capture", capture, methods=["POST"]),
+        Route("/dashboard", dashboard_page),
+        Route("/dashboard/api/overview", api_overview),
+        Route("/dashboard/api/items", api_items),
+        Route("/dashboard/api/tasks", api_tasks),
     ],
     middleware=_middleware,
     lifespan=lifespan,
