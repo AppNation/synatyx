@@ -49,6 +49,8 @@ class SynatyxMCPServer:
         self._svc_cache: dict[str, tuple[RetrieveService, StoreService, IngestService]] = {}
         self._budget = BudgetManager()
         self._skill_svc_cache: dict[str, SkillService] = {}
+        self._pack_svc_cache: dict[str, Any] = {}
+        self._index_svc_cache: dict[str, Any] = {}
         self._tracker = SessionTracker(redis, settings.tracking)
         self._register_handlers()
 
@@ -59,6 +61,67 @@ class SynatyxMCPServer:
         if key not in self._skill_svc_cache:
             self._skill_svc_cache[key] = SkillService(storage, self._postgres)
         return self._skill_svc_cache[key]
+
+    async def _get_pack_service(self, user_id: str, project: str | None = None):
+        """Return a PackService backed by the active project's collection.
+
+        Invalidated by context_index so a freshly built code index is picked
+        up on the next pack call."""
+        from src.core.pack import PackService
+
+        storage, retrieve, _, _, _ = await self._get_services(user_id, project)
+        key = storage.collection_name
+        if key not in self._pack_svc_cache:
+            l4_storage = await self._project_manager.get_l4_storage()
+            relations = RelationService(self._postgres, storage, l4_storage)
+            skills = SkillService(storage, self._postgres)
+            index_search = await self._maybe_index_search(storage)
+            self._pack_svc_cache[key] = PackService(
+                retrieve, storage, l4_storage, self._postgres,
+                relations, skills, index_search,
+            )
+        return self._pack_svc_cache[key]
+
+    async def _maybe_index_search(self, storage: QdrantStorage):
+        """Return an IndexSearchService when the project has an index
+        collection, else None."""
+        from src.core.index import IndexSearchService
+        from src.core.project import index_collection_for
+
+        slug = storage.project_slug
+        if not slug:
+            return None
+        index_collection = index_collection_for(slug)
+        try:
+            collections = await storage.get_all_collections()
+        except Exception:
+            return None
+        if index_collection not in collections:
+            return None
+        return IndexSearchService(storage.scoped(index_collection))
+
+    async def _get_index_services(self, user_id: str, project: str | None = None):
+        """Return (IndexService, IndexSearchService) for the project's code/doc
+        index collection. Requires a resolvable project — indexing into a
+        default collection would orphan chunks on project rename."""
+        from src.core.index import IndexSearchService, IndexService
+
+        if project:
+            slug = project
+        else:
+            slug = await self._project_manager.get_project(user_id)
+        if not slug:
+            raise ValueError(
+                "context_index requires a project — call context_set_project "
+                "first or pass the project argument."
+            )
+        if slug not in self._index_svc_cache:
+            storage = await self._project_manager.get_index_storage(slug)
+            self._index_svc_cache[slug] = (
+                IndexService(storage, slug),
+                IndexSearchService(storage),
+            )
+        return self._index_svc_cache[slug]
 
     async def _get_relation_service(
         self, user_id: str, project: str | None = None
@@ -251,6 +314,50 @@ class SynatyxMCPServer:
                 "project": slug,
                 "collection": storage.collection_name,
                 **brief_result,
+                **_warn,
+            }
+
+        elif name == "context_pack":
+            pack_svc = await self._get_pack_service(user_id, args.get("project"))
+            pack_result = await pack_svc.pack(
+                user_id=user_id,
+                query=args["query"],
+                project=args.get("project"),
+                session_id=args.get("session_id"),
+                max_tokens=args.get("max_tokens", 3000),
+                include_code=args.get("include_code", True),
+            )
+            return {**pack_result, **_warn}
+
+        elif name == "context_index":
+            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
+            index_result = await index_svc.index(
+                source=args["source"],
+                user_id=user_id,
+                force=args.get("force", False),
+                max_files=args.get("max_files", 500),
+            )
+            # A fresh index must be visible to the next context_pack call
+            self._pack_svc_cache.pop(storage.collection_name, None)
+            return {**index_result.to_dict(), **_warn}
+
+        elif name == "context_index_search":
+            _, index_search = await self._get_index_services(user_id, args.get("project"))
+            hits = await index_search.search(
+                query=args["query"],
+                user_id=user_id,
+                top_k=args.get("top_k", 5),
+                language=args.get("language"),
+                path_prefix=args.get("path_prefix"),
+            )
+            return {"query": args["query"], "hits": hits, "count": len(hits), **_warn}
+
+        elif name == "context_index_status":
+            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
+            return {
+                **await index_svc.status(
+                    user_id, check_staleness=args.get("check_staleness", True)
+                ),
                 **_warn,
             }
 

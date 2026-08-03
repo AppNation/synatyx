@@ -50,24 +50,44 @@ class CodeParser(BaseParser):
                                 metadata={"language": "python", "file": source})]
 
         lines = text.splitlines()
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if not isinstance(node, ast.Module):
-                    start = node.lineno - 1
-                    end = node.end_lineno or (start + 1)
-                    snippet = "\n".join(lines[start:end])
-                    docstring = ast.get_docstring(node) or ""
-                    chunks.append(ParsedChunk(
-                        content=snippet,
-                        title=node.name,
-                        metadata={
-                            "language": "python",
-                            "file": source,
-                            "name": node.name,
-                            "docstring": docstring[:200],
-                            "line_start": node.lineno,
-                        },
-                    ))
+
+        def make_chunk(node: ast.AST, name: str, kind: str, end_line: int | None = None) -> ParsedChunk:
+            start = node.lineno - 1  # type: ignore[attr-defined]
+            end = end_line if end_line is not None else (node.end_lineno or start + 1)  # type: ignore[attr-defined]
+            snippet = "\n".join(lines[start:end])
+            docstring = ast.get_docstring(node) or ""  # type: ignore[arg-type]
+            return ParsedChunk(
+                content=snippet,
+                title=name,
+                metadata={
+                    "language": "python",
+                    "file": source,
+                    "name": name,
+                    "kind": kind,
+                    "docstring": docstring[:200],
+                    "line_start": node.lineno,  # type: ignore[attr-defined]
+                    "line_end": end,
+                },
+            )
+
+        # Walk top-level defs only — ast.walk would emit every method twice
+        # (inside its class chunk AND standalone). Classes are split into a
+        # header chunk plus one chunk per method, so no content is duplicated
+        # and symbol search still resolves methods.
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                chunks.append(make_chunk(node, node.name, "function"))
+            elif isinstance(node, ast.ClassDef):
+                methods = [
+                    n for n in node.body
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+                header_end = (methods[0].lineno - 1) if methods else node.end_lineno
+                chunks.append(make_chunk(node, node.name, "class", end_line=header_end))
+                for method in methods:
+                    chunks.append(
+                        make_chunk(method, f"{node.name}.{method.name}", "method")
+                    )
         # If nothing found (e.g. script with no defs), store as one chunk
         if not chunks:
             chunks.append(ParsedChunk(content=text, title=Path(source).name,

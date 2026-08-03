@@ -52,6 +52,24 @@ def build_trace_event(tool: str, args: dict[str, Any], result: dict[str, Any]) -
         return {"op": "deprecate"}
     if tool == "context_brief":
         return {"op": "brief"}
+    if tool == "context_pack":
+        return {
+            "op": "pack",
+            "query": str(args.get("query", ""))[:_PREVIEW],
+            "tokens": result.get("token_estimate", 0),
+        }
+    if tool == "context_index":
+        return {
+            "op": "index",
+            "source": str(args.get("source", ""))[:_PREVIEW],
+            "files": result.get("files_indexed", 0),
+        }
+    if tool == "context_index_search":
+        return {
+            "op": "index_search",
+            "query": str(args.get("query", ""))[:_PREVIEW],
+            "matched": result.get("count", 0),
+        }
     return None
 
 
@@ -96,7 +114,7 @@ def render_trace(scope: str, events: list[dict[str, Any]]) -> str:
     for e in events:
         op = e.get("op", "?")
         counts[op] = counts.get(op, 0) + 1
-        if op == "retrieve" and e.get("query"):
+        if op in ("retrieve", "pack", "index_search") and e.get("query"):
             queries.append(e["query"])
         elif op == "store":
             stored.extend(e.get("previews", []))

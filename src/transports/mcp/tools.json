@@ -32,6 +32,43 @@
     }
   },
   {
+    "name": "context_pack",
+    "description": "Assemble ONE prompt-ready context block for a specific task — query-driven, unlike context_brief's session-start digest. Returns structured sections (identity, relevant memories with 1-hop relations, pinned checkpoints, dead-end attempts, open tasks, matching skills, code-index hits) AND a 'rendered' markdown string ready to inject into a prompt, with provenance and staleness markers. Unspent section budget is reallocated to fuller sections. Call this before starting any significant task — it replaces separate retrieve + task_list + skill_find calls.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The task or question to pack context for"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug — overrides the active-project pointer for this call (optional)"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Session identifier for session scoping (optional)"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token budget for the whole pack (default: 3000)"
+        },
+        "include_code": {
+          "type": "boolean",
+          "description": "Include code/doc index hits when the project has an index (default: true)"
+        }
+      },
+      "required": [
+        "query",
+        "user_id"
+      ]
+    }
+  },
+  {
     "name": "context_retrieve",
     "description": "Retrieve relevant context items for the current query from all memory layers.",
     "parameters": {
@@ -563,6 +600,100 @@
       },
       "required": [
         "source",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_index",
+    "description": "Index a file, directory, or glob into the project's persistent code/doc index (a separate ctx_<slug>__index collection — never mixed into memories). Idempotent: unchanged files are skipped via content hashes, changed files re-embed only their changed chunks, and stale chunks are swept. Respects .gitignore in git repos. Requires an active or explicit project.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Absolute path to a file or directory, or a glob pattern"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug (optional — defaults to the active project; required if none is set)"
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Re-embed files even if their hash is unchanged (default: false)"
+        },
+        "max_files": {
+          "type": "integer",
+          "description": "Cap on files per call (default: 500)"
+        }
+      },
+      "required": [
+        "source",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_index_search",
+    "description": "Hybrid search over the project's persistent code/doc index: dense semantic search fused with exact-symbol and full-text keyword matching, so exact identifiers (function/class names) are found even when semantic search misses them. Returns snippets with path, symbol, and line numbers, flagged possibly_stale when the file changed on disk since indexing. Backtick an identifier in the query for an exact-match boost.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Natural-language question or an identifier (backtick exact symbols for a boost)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug (optional)"
+        },
+        "top_k": {
+          "type": "integer",
+          "description": "Max hits (default: 5)"
+        },
+        "language": {
+          "type": "string",
+          "description": "Filter by language, e.g. 'py', 'ts' (optional)"
+        },
+        "path_prefix": {
+          "type": "string",
+          "description": "Only hits whose path starts with this prefix (optional)"
+        }
+      },
+      "required": [
+        "query",
+        "user_id"
+      ]
+    }
+  },
+  {
+    "name": "context_index_status",
+    "description": "Report what's in the project's code/doc index: file and chunk counts, per-language breakdown, last index time, and which indexed files are stale (changed) or missing (deleted on disk) since indexing.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User identifier"
+        },
+        "project": {
+          "type": "string",
+          "description": "Project slug (optional)"
+        },
+        "check_staleness": {
+          "type": "boolean",
+          "description": "Re-hash indexed files against disk (default: true, capped at 200 files)"
+        }
+      },
+      "required": [
         "user_id"
       ]
     }

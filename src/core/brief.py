@@ -68,18 +68,18 @@ def _fit(items: list[ContextItem], budget_tokens: int) -> tuple[list[dict[str, A
     If even the first item doesn't fit, it is included truncated — a section
     with content should never come back empty just because one item is long.
     """
-    selected: list[dict[str, Any]] = []
-    used = 0
-    for item in items:
-        tokens = item.token_estimate
-        if used + tokens > budget_tokens:
-            if not selected and budget_tokens > 0:
-                selected.append(_dump(item, max_chars=budget_tokens * 4))
-                used = budget_tokens
-            break
-        selected.append(_dump(item))
-        used += tokens
-    return selected, used
+    from src.core.budget import BudgetEntry, fit_entries
+
+    entries = [
+        BudgetEntry(
+            tokens=item.token_estimate,
+            payload=(lambda i=item: _dump(i)),
+            raw_content=item.content,
+        )
+        for item in items
+    ]
+    result = fit_entries(entries, budget_tokens)
+    return result.entries, result.used
 
 
 class BriefService:

@@ -189,3 +189,40 @@ async def test_store_failure_never_raises() -> None:
         raise RuntimeError("qdrant down")
 
     assert await tracker.compact_idle(broken_store) == 0
+
+
+# ── new context-engine ops ───────────────────────────────────────────────────
+
+def test_event_pack():
+    e = build_trace_event(
+        "context_pack",
+        {"query": "how does budgeting work"},
+        {"token_estimate": 1234},
+    )
+    assert e == {"op": "pack", "query": "how does budgeting work", "tokens": 1234}
+
+
+def test_event_index():
+    e = build_trace_event(
+        "context_index",
+        {"source": "/repo/src"},
+        {"files_indexed": 12},
+    )
+    assert e == {"op": "index", "source": "/repo/src", "files": 12}
+
+
+def test_event_index_search():
+    e = build_trace_event(
+        "context_index_search",
+        {"query": "SectionBudgeter"},
+        {"count": 3},
+    )
+    assert e == {"op": "index_search", "query": "SectionBudgeter", "matched": 3}
+
+
+def test_render_trace_counts_pack_as_topic():
+    events = [
+        {"op": "pack", "query": "retrieval budgeting", "ts": "2026-08-03T10:00:00+00:00"},
+    ]
+    rendered = render_trace("synatyx", events)
+    assert "retrieval budgeting" in rendered

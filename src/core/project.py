@@ -32,6 +32,22 @@ def collection_for(slug: str) -> str:
     return f"{COLLECTION_PREFIX}{slug}"
 
 
+# The persistent code/doc index lives in a sibling collection per project.
+# Keeping it out of ctx_<slug> means memory paths (brief scans, GC decay,
+# consolidation clustering, visualize) can never leak code chunks by
+# construction — no type-exclusion filters to forget.
+INDEX_SUFFIX = "__index"
+
+
+def index_collection_for(slug: str) -> str:
+    """Return the code/doc index collection name for a project slug."""
+    return f"{COLLECTION_PREFIX}{slug}{INDEX_SUFFIX}"
+
+
+def is_index_collection(name: str) -> bool:
+    return name.endswith(INDEX_SUFFIX)
+
+
 class ProjectManager:
     """Manages per-project Qdrant collections, backed by Redis for state persistence.
 
@@ -94,6 +110,22 @@ class ProjectManager:
         of which project is currently active.
         """
         return await self._ensure_storage(L4_COLLECTION_SLUG)
+
+    async def get_index_storage(self, project_slug: str) -> QdrantStorage:
+        """Return storage for a project's code/doc index collection
+        (ctx_<slug>__index), creating it with its payload indexes if needed."""
+        cache_key = f"{project_slug}{INDEX_SUFFIX}"
+        if cache_key not in self._cache:
+            storage = QdrantStorage(
+                host=self._default.host,
+                port=self._default.port,
+                collection_name=index_collection_for(project_slug),
+            )
+            await storage.init_collection()
+            from src.core.index import INDEX_PAYLOAD_SCHEMA
+            await storage.ensure_payload_indexes(INDEX_PAYLOAD_SCHEMA)
+            self._cache[cache_key] = storage
+        return self._cache[cache_key]
 
     async def _ensure_storage(self, slug: str) -> QdrantStorage:
         """Return a cached (or newly created) QdrantStorage for the given slug."""

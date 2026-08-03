@@ -20,6 +20,13 @@ _HTML_PATH = Path(__file__).parent / "dashboard.html"
 _COLLECTION_PREFIX = "ctx_"
 
 
+def _is_memory_collection(name: str) -> bool:
+    """Memory collections only — code/doc index collections (ctx_<slug>__index)
+    are not projects and would show up as phantom entries."""
+    from src.core.project import is_index_collection
+    return name.startswith(_COLLECTION_PREFIX) and not is_index_collection(name)
+
+
 def _storages(request: Request) -> tuple[Any, Any] | None:
     qdrant = getattr(request.app.state, "qdrant", None)
     postgres = getattr(request.app.state, "postgres", None)
@@ -41,7 +48,7 @@ async def api_overview(request: Request) -> JSONResponse:
     qdrant, postgres = storages
 
     names = sorted(
-        n for n in await qdrant.get_all_collections() if n.startswith(_COLLECTION_PREFIX)
+        n for n in await qdrant.get_all_collections() if _is_memory_collection(n)
     )
     collections = []
     for name in names:
@@ -85,7 +92,7 @@ async def api_items(request: Request) -> JSONResponse:
     qdrant, _ = storages
 
     collection = request.query_params.get("collection", "")
-    valid = {n for n in await qdrant.get_all_collections() if n.startswith(_COLLECTION_PREFIX)}
+    valid = {n for n in await qdrant.get_all_collections() if _is_memory_collection(n)}
     if collection not in valid:
         return JSONResponse({"error": f"unknown collection {collection!r}"}, status_code=400)
 
@@ -158,7 +165,7 @@ async def api_users(request: Request) -> JSONResponse:
     qdrant, _ = storages
 
     collection = request.query_params.get("collection", "")
-    valid = {n for n in await qdrant.get_all_collections() if n.startswith(_COLLECTION_PREFIX)}
+    valid = {n for n in await qdrant.get_all_collections() if _is_memory_collection(n)}
     if collection not in valid:
         return JSONResponse({"error": f"unknown collection {collection!r}"}, status_code=400)
 
@@ -207,7 +214,7 @@ async def api_graph(request: Request) -> JSONResponse:
     qdrant, postgres = storages
 
     collection = request.query_params.get("collection", "")
-    valid = {n for n in await qdrant.get_all_collections() if n.startswith(_COLLECTION_PREFIX)}
+    valid = {n for n in await qdrant.get_all_collections() if _is_memory_collection(n)}
     if collection not in valid:
         return JSONResponse({"error": f"unknown collection {collection!r}"}, status_code=400)
 
