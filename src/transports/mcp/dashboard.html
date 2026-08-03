@@ -243,7 +243,7 @@
   </div>
 
   <div class="card" style="margin-bottom:16px">
-    <h2>Memory graph — 3D · drag to rotate</h2>
+    <h2>Memory graph — 3D · drag rotate · scroll zoom · shift-drag pan · click node to focus · dbl-click reset</h2>
     <div class="controls">
       <label>Collection
         <select id="sel-graph-collection"></select>
@@ -317,7 +317,7 @@
     </div>
 
     <div class="card" style="margin-bottom:16px">
-      <h2>Index map — 3D · files by directory · drag to rotate</h2>
+      <h2>Index map — 3D · files by directory · drag rotate · scroll zoom · shift-drag pan · click file to focus + inspect · dbl-click reset</h2>
       <div class="controls">
         <label>Project
           <select id="sel-index"></select>
@@ -636,14 +636,21 @@ function render3D(data, opts) {
     .map((e) => ({ a: byId.get(e.source), b: byId.get(e.target), type: e.type }))
     .filter((l) => l.a && l.b);
 
+  /* adjacency for selection highlighting */
+  const adj = new Map();
+  const addAdj = (a, b) => { if (!adj.has(a)) adj.set(a, new Set()); adj.get(a).add(b); };
+  links.forEach((l) => { addAdj(l.a.id, l.b.id); addAdj(l.b.id, l.a.id); });
+
   box.innerHTML = "";
   const canvas = document.createElement("canvas");
   box.appendChild(canvas);
   const ctx = canvas.getContext("2d");
   const DPR = Math.min(2, window.devicePixelRatio || 1);
   const CSS_H = Math.max(340, Math.min(560, 180 + nodes.length * 1.4));
+  const HIGHLIGHT = opts.highlight || "#67e8f9";
 
-  let yaw = 0.6, pitch = 0.26, dragging = null, hovering = false;
+  let yaw = 0.6, pitch = 0.26, zoom = 1, panX = 0, panY = 0;
+  let dragging = null, hovering = false, selectedId = null;
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let proj = [];
 
@@ -655,7 +662,8 @@ function render3D(data, opts) {
     let y = p.y * cp - z * sp;
     z = p.y * sp + z * cp;
     const f = 460 / (460 + z);
-    return { x: W / 2 + x * f, y: H / 2 + y * f, f, z };
+    /* f drives radius (zoom-scaled); d drives depth alpha (zoom-independent) */
+    return { x: W / 2 + panX + x * f * zoom, y: H / 2 + panY + y * f * zoom, f: f * zoom, d: f, z };
   }
 
   function draw() {
@@ -678,11 +686,18 @@ function render3D(data, opts) {
 
     proj = nodes.map((n) => project(n, W, H));
 
+    const neighbors = selectedId ? (adj.get(selectedId) || new Set()) : null;
+
     links.forEach((l) => {
       const A = project(l.a, W, H), B = project(l.b, W, H);
       l.px = A; l.py = B;
-      ctx.strokeStyle = `rgba(167,139,250,${(0.18 + 0.35 * (A.f + B.f) / 2).toFixed(2)})`;
-      ctx.lineWidth = 1;
+      const touching = selectedId && (l.a.id === selectedId || l.b.id === selectedId);
+      let alpha = 0.18 + 0.35 * (A.d + B.d) / 2;
+      if (selectedId) alpha = touching ? 0.85 : alpha * 0.12;
+      ctx.strokeStyle = touching
+        ? `rgba(103,232,249,${alpha.toFixed(2)})`
+        : `rgba(167,139,250,${alpha.toFixed(2)})`;
+      ctx.lineWidth = touching ? 1.8 : 1;
       ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
     });
 
@@ -691,7 +706,11 @@ function render3D(data, opts) {
     for (const i of order) {
       const n = nodes[i], q = proj[i];
       const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f;
-      const depth = Math.max(0.25, Math.min(1, q.f * q.f));
+      let depth = Math.max(0.25, Math.min(1, q.d * q.d));
+      /* focus mode: everything outside the selected node + neighbors recedes */
+      if (selectedId && n.id !== selectedId && !(neighbors && neighbors.has(n.id))) {
+        depth *= 0.22;
+      }
       const c = opts.color(n);
       if (n.is_deprecated) {
         ctx.setLineDash([3, 2]);
@@ -711,6 +730,11 @@ function render3D(data, opts) {
         ctx.strokeStyle = "#f1f2fa"; ctx.lineWidth = 1.6;
         ctx.beginPath(); ctx.arc(q.x, q.y, r + 2.4, 0, Math.PI * 2); ctx.stroke();
       }
+      if (n.id === selectedId) {
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+        ctx.strokeStyle = HIGHLIGHT; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(q.x, q.y, r + 3.5, 0, Math.PI * 2); ctx.stroke();
+      }
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
   }
@@ -724,7 +748,8 @@ function render3D(data, opts) {
 
   function tick() {
     if (box.offsetParent !== null) {  /* skip drawing while the tab is hidden */
-      if (!dragging && !hovering && !reduced) yaw += 0.0032;
+      /* pause auto-orbit while focused on a node — spinning fights inspection */
+      if (!dragging && !hovering && !reduced && !selectedId) yaw += 0.0032;
       draw();
     }
     box._anim = requestAnimationFrame(tick);
@@ -740,45 +765,67 @@ function render3D(data, opts) {
     return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
   };
 
+  function nodeAt(p) {
+    let hit = null, hitD = Infinity;
+    nodes.forEach((n, i) => {
+      const q = proj[i];
+      if (!q) return;
+      const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
+      if (Math.hypot(p.x - q.x, p.y - q.y) < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
+    });
+    return hit;
+  }
+
   canvas.addEventListener("pointerdown", (evt) => {
-    dragging = { x: evt.clientX, y: evt.clientY, yaw, pitch };
+    dragging = {
+      x: evt.clientX, y: evt.clientY, yaw, pitch, panX, panY,
+      mode: evt.shiftKey ? "pan" : "rotate",
+    };
     canvas.setPointerCapture(evt.pointerId);
     canvas.classList.add("dragging");
     hideTip();
     evt.preventDefault();
   });
   canvas.addEventListener("pointerup", (evt) => {
-    /* a press that barely moved is a click — surface the node if asked */
-    if (opts.onClick && dragging &&
-        Math.hypot(evt.clientX - dragging.x, evt.clientY - dragging.y) < 5) {
-      const p = toLocal(evt);
-      let hit = null, hitD = Infinity;
-      nodes.forEach((n, i) => {
-        const q = proj[i];
-        if (!q) return;
-        const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
-        if (Math.hypot(p.x - q.x, p.y - q.y) < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
-      });
-      if (hit) opts.onClick(hit);
+    /* a press that barely moved is a click: select + highlight relations */
+    if (dragging && Math.hypot(evt.clientX - dragging.x, evt.clientY - dragging.y) < 5) {
+      const hit = nodeAt(toLocal(evt));
+      selectedId = hit && hit.id !== selectedId ? hit.id : null;
+      if (hit && opts.onClick) opts.onClick(hit);
+      if (reduced) draw();
     }
   });
+  canvas.addEventListener("dblclick", () => {
+    yaw = 0.6; pitch = 0.26; zoom = 1; panX = 0; panY = 0; selectedId = null;
+    if (reduced) draw();
+  });
+  canvas.addEventListener("wheel", (evt) => {
+    evt.preventDefault();
+    const p = toLocal(evt);
+    const W = canvas.width / DPR, H = canvas.height / DPR;
+    const next = Math.max(0.35, Math.min(4, zoom * Math.exp(-evt.deltaY * 0.0014)));
+    /* keep the point under the cursor fixed while zooming */
+    const scale = next / zoom;
+    panX = (p.x - W / 2) - ((p.x - W / 2) - panX) * scale;
+    panY = (p.y - H / 2) - ((p.y - H / 2) - panY) * scale;
+    zoom = next;
+    if (reduced) draw();
+  }, { passive: false });
   canvas.addEventListener("pointermove", (evt) => {
     if (dragging) {
-      yaw = dragging.yaw + (evt.clientX - dragging.x) * 0.006;
-      pitch = Math.max(-1.25, Math.min(1.25, dragging.pitch + (evt.clientY - dragging.y) * 0.006));
+      if (dragging.mode === "pan") {
+        panX = dragging.panX + (evt.clientX - dragging.x);
+        panY = dragging.panY + (evt.clientY - dragging.y);
+      } else {
+        yaw = dragging.yaw + (evt.clientX - dragging.x) * 0.006;
+        pitch = Math.max(-1.25, Math.min(1.25, dragging.pitch + (evt.clientY - dragging.y) * 0.006));
+      }
       if (reduced) draw();
       return;
     }
     /* hover: nodes first (nearest projected hit), then relation edges */
     const p = toLocal(evt);
-    let hit = null, hitD = Infinity;
-    nodes.forEach((n, i) => {
-      const q = proj[i];
-      if (!q) return;
-      const r = (4 + (Number(n.importance) || 0.5) * 5) * q.f + 3;
-      const d = Math.hypot(p.x - q.x, p.y - q.y);
-      if (d < r && (!hit || q.z < hitD)) { hit = n; hitD = q.z; }
-    });
+    const hit = nodeAt(p);
     if (hit) {
       hovering = true;
       showTip(opts.tip(hit), evt.clientX, evt.clientY);
