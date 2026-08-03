@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synatyx — Memory Dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface:        #fcfcfb;
+    --ink:            #0b0b0b;
+    --ink-2:          #52514e;
+    --muted:          #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    /* layer identity — categorical slots 1-4, fixed order, never cycled */
+    --l1: #2a78d6;  /* blue    */
+    --l2: #eb6834;  /* orange  */
+    --l3: #1baf7a;  /* aqua    */
+    --l4: #eda100;  /* yellow  */
+    --status-good:     #0ca30c;
+    --status-warning:  #fab219;
+    --status-serious:  #ec835a;
+    --status-critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:     #0d0d0d;
+      --surface:  #1a1a19;
+      --ink:      #ffffff;
+      --ink-2:    #c3c2b7;
+      --muted:    #898781;
+      --grid:     #2c2c2a;
+      --baseline: #383835;
+      --border:   rgba(255,255,255,0.10);
+      --l1: #3987e5;
+      --l2: #d95926;
+      --l3: #199e70;
+      --l4: #c98500;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  button, select {
+    font: inherit; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--baseline); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile .label { font-size: 12px; color: var(--muted); }
+  .tile .value { font-size: 28px; font-weight: 600; margin-top: 2px; }
+  .tile .note  { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+  .charts { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.6fr); gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+  .legend .key { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  .grid2 { display: grid; grid-template-columns: 1.8fr 1fr; gap: 16px; }
+  @media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
+       border-bottom: 1px solid var(--grid); padding: 6px 8px; }
+  td { padding: 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-2); }
+  .content-cell { max-width: 520px; overflow-wrap: anywhere; }
+  .dim { opacity: 0.55; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+  .badge {
+    display: inline-block; font-size: 11px; border: 1px solid var(--border);
+    border-radius: 999px; padding: 0 8px; color: var(--ink-2); margin-left: 6px;
+  }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .task { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  .task:last-child { border-bottom: none; }
+  .task .t-title { font-weight: 550; }
+  .prio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); }
+
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .controls label { font-size: 12px; color: var(--muted); }
+
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    max-width: 280px;
+  }
+  #tooltip .tt-title { font-weight: 600; margin-bottom: 2px; }
+  #tooltip .tt-row { color: var(--ink-2); }
+
+  #auth {
+    display: none; max-width: 420px; margin: 80px auto; text-align: center;
+  }
+  #auth input {
+    font: inherit; width: 100%; margin: 12px 0; padding: 8px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--page); color: var(--ink);
+  }
+  #err { color: var(--status-critical); font-size: 13px; margin-top: 8px; display: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+  svg text { fill: var(--ink-2); font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  svg .tick { fill: var(--muted); font-size: 11px; }
+  svg .val { fill: var(--ink); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="auth" class="card">
+  <h2 style="font-size:16px;color:var(--ink)">Synatyx dashboard</h2>
+  <p style="color:var(--ink-2);font-size:13px">This server requires the admin key to read memory data.</p>
+  <input id="key-input" type="password" placeholder="Admin key" autocomplete="off">
+  <button id="key-go">Connect</button>
+  <div id="err">That key was rejected.</div>
+</div>
+
+<div class="wrap" id="main" style="display:none">
+  <header>
+    <h1>Synatyx</h1>
+    <span class="sub">memory dashboard</span>
+    <span class="spacer"></span>
+    <span class="sub" id="updated"></span>
+    <button id="refresh">Refresh</button>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="charts">
+    <div class="card">
+      <h2>Active memories by layer</h2>
+      <div id="layer-chart"></div>
+    </div>
+    <div class="card">
+      <h2>Active memories by collection</h2>
+      <div class="legend" id="stack-legend"></div>
+      <div id="stack-chart"></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Recent memories</h2>
+      <div class="controls">
+        <label>Collection
+          <select id="sel-collection"></select>
+        </label>
+        <label>Layer
+          <select id="sel-layer">
+            <option value="">all</option>
+            <option>L1</option><option>L2</option><option>L3</option><option>L4</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="chk-deprecated"> include deprecated</label>
+      </div>
+      <div id="items"></div>
+    </div>
+    <div class="card">
+      <h2>Tasks</h2>
+      <div class="controls">
+        <label>Status
+          <select id="sel-status">
+            <option value="pending" selected>pending</option>
+            <option value="in_progress">in progress</option>
+            <option value="done">done</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+      </div>
+      <div id="tasks"></div>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+"use strict";
+const LAYERS = ["L1", "L2", "L3", "L4"];
+const LAYER_COLOR = { L1: "var(--l1)", L2: "var(--l2)", L3: "var(--l3)", L4: "var(--l4)" };
+const LAYER_NAME = { L1: "L1 session", L2: "L2 episodic", L3: "L3 semantic", L4: "L4 preferences" };
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let adminKey = sessionStorage.getItem("synatyx_admin_key") || "";
+
+async function api(path) {
+  const headers = adminKey ? { "Authorization": "Bearer " + adminKey } : {};
+  const res = await fetch(path, { headers });
+  if (res.status === 401) { showAuth(true); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function showAuth(rejected) {
+  $("main").style.display = "none";
+  $("auth").style.display = "block";
+  $("err").style.display = rejected && adminKey ? "block" : "none";
+}
+
+$("key-go").addEventListener("click", () => {
+  adminKey = $("key-input").value.trim();
+  sessionStorage.setItem("synatyx_admin_key", adminKey);
+  boot();
+});
+$("key-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("key-go").click(); });
+
+/* ── tooltip ── */
+const tt = $("tooltip");
+function bindTooltips(root) {
+  root.querySelectorAll("[data-tt]").forEach((el) => {
+    el.addEventListener("mousemove", (e) => {
+      tt.innerHTML = el.dataset.tt;
+      tt.style.display = "block";
+      const x = Math.min(e.clientX + 14, window.innerWidth - tt.offsetWidth - 8);
+      const y = Math.min(e.clientY + 14, window.innerHeight - tt.offsetHeight - 8);
+      tt.style.left = x + "px";
+      tt.style.top = y + "px";
+    });
+    el.addEventListener("mouseleave", () => { tt.style.display = "none"; });
+  });
+}
+
+/* ── stat tiles ── */
+function renderTiles(t) {
+  const tiles = [
+    { label: "Total memories", value: t.total, note: t.active + " active" },
+    { label: "Deprecated", value: t.deprecated },
+    { label: "Pinned checkpoints", value: t.pinned },
+    { label: "Collections", value: t.collections },
+    { label: "Open tasks", value: t.open_tasks },
+  ];
+  $("tiles").innerHTML = tiles.map((x) => `
+    <div class="card tile">
+      <div class="label">${esc(x.label)}</div>
+      <div class="value">${x.value.toLocaleString()}</div>
+      ${x.note ? `<div class="note">${esc(x.note)}</div>` : ""}
+    </div>`).join("");
+}
+
+/* ── horizontal bar chart: active memories by layer ──
+   Single measure across the four layers; each bar wears its layer's fixed
+   identity color, row labels carry identity, value at the bar tip. */
+function renderLayerChart(byLayer) {
+  const max = Math.max(1, ...LAYERS.map((l) => byLayer[l] || 0));
+  const W = 380, labelW = 110, valueW = 44, barH = 20, gap = 14, top = 4;
+  const plotW = W - labelW - valueW;
+  const H = top + LAYERS.length * (barH + gap);
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Active memories by layer">`;
+  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 6}" stroke="var(--baseline)" stroke-width="1"/>`;
+  LAYERS.forEach((l, i) => {
+    const v = byLayer[l] || 0;
+    const y = top + i * (barH + gap);
+    const w = Math.max(v > 0 ? 3 : 0, (v / max) * plotW);
+    s += `<text x="${labelW - 8}" y="${y + barH - 5}" text-anchor="end">${esc(LAYER_NAME[l])}</text>`;
+    if (w > 0) {
+      s += `<path data-tt="<div class='tt-title'>${esc(LAYER_NAME[l])}</div><div class='tt-row'>${v.toLocaleString()} active memories</div>"
+        d="M${labelW},${y} h${Math.max(0, w - 4)} a4,4 0 0 1 4,4 v${barH - 8} a4,4 0 0 1 -4,4 h-${Math.max(0, w - 4)} z"
+        fill="${LAYER_COLOR[l]}"/>`;
+    }
+    s += `<text class="val" x="${labelW + w + 8}" y="${y + barH - 5}">${v.toLocaleString()}</text>`;
+  });
+  s += "</svg>";
+  $("layer-chart").innerHTML = s;
+  bindTooltips($("layer-chart"));
+}
+
+/* ── stacked horizontal bars: collections × layer ──
+   Layer identity keeps the same four colors; 2px surface gaps separate
+   touching segments; legend on top; per-segment tooltip. */
+function renderStackChart(collections) {
+  $("stack-legend").innerHTML = LAYERS.map((l) =>
+    `<span class="key"><span class="swatch" style="background:${LAYER_COLOR[l]}"></span>${esc(LAYER_NAME[l])}</span>`
+  ).join("");
+
+  const rows = collections
+    .map((c) => ({ ...c, activeSum: LAYERS.reduce((a, l) => a + (c.by_layer[l] || 0), 0) }))
+    .sort((a, b) => b.activeSum - a.activeSum)
+    .slice(0, 12);
+  const max = Math.max(1, ...rows.map((r) => r.activeSum));
+  const W = 620, labelW = 170, valueW = 48, barH = 18, gap = 12, top = 4;
+  const plotW = W - labelW - valueW;
+  const H = top + rows.length * (barH + gap);
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Active memories by collection">`;
+  s += `<line x1="${labelW}" y1="${top}" x2="${labelW}" y2="${H - gap + 4}" stroke="var(--baseline)" stroke-width="1"/>`;
+  rows.forEach((r, i) => {
+    const y = top + i * (barH + gap);
+    const name = r.is_user_global ? r.slug + " (global L4)" : r.slug;
+    s += `<text x="${labelW - 8}" y="${y + barH - 4}" text-anchor="end">${esc(name.length > 22 ? name.slice(0, 21) + "…" : name)}</text>`;
+    let x = labelW;
+    LAYERS.forEach((l, li) => {
+      const v = r.by_layer[l] || 0;
+      if (!v) return;
+      const w = (v / max) * plotW;
+      const isLast = LAYERS.slice(li + 1).every((m) => !(r.by_layer[m] || 0));
+      const drawW = Math.max(1, w - (isLast ? 0 : 2)); /* 2px surface gap between segments */
+      const tip = `<div class='tt-title'>${esc(name)}</div><div class='tt-row'>${esc(LAYER_NAME[l])}: ${v.toLocaleString()}</div><div class='tt-row'>total active: ${r.activeSum.toLocaleString()}</div>`;
+      if (isLast) {
+        s += `<path data-tt="${tip}" d="M${x},${y} h${Math.max(0, drawW - 4)} a4,4 0 0 1 4,4 v${barH - 8} a4,4 0 0 1 -4,4 h-${Math.max(0, drawW - 4)} z" fill="${LAYER_COLOR[l]}"/>`;
+      } else {
+        s += `<rect data-tt="${tip}" x="${x}" y="${y}" width="${drawW}" height="${barH}" fill="${LAYER_COLOR[l]}"/>`;
+      }
+      x += w;
+    });
+    s += `<text class="val" x="${x + 8}" y="${y + barH - 4}">${r.activeSum.toLocaleString()}</text>`;
+  });
+  s += "</svg>";
+  $("stack-chart").innerHTML = s;
+  bindTooltips($("stack-chart"));
+}
+
+/* ── recent memories table ── */
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderItems(data) {
+  if (!data.items.length) {
+    $("items").innerHTML = `<div class="empty">No memories match this filter.</div>`;
+    return;
+  }
+  $("items").innerHTML = `<table>
+    <thead><tr><th>Layer</th><th>Memory</th><th style="text-align:right">Imp.</th><th>When</th></tr></thead>
+    <tbody>` + data.items.map((it) => {
+      const badges =
+        (it.checkpoint_name ? `<span class="badge">checkpoint</span>` : "") +
+        (it.is_pinned && !it.checkpoint_name ? `<span class="badge">pinned</span>` : "") +
+        (it.type === "attempt" ? `<span class="badge">attempt</span>` : "") +
+        (it.is_deprecated ? `<span class="badge">deprecated</span>` : "");
+      const meta = [it.user_id, it.session_id, it.origin].filter(Boolean).join(" · ");
+      return `<tr class="${it.is_deprecated ? "dim" : ""}">
+        <td><span class="chip"><span class="swatch" style="background:${LAYER_COLOR[it.memory_layer] || "var(--muted)"}"></span>${esc(it.memory_layer)}</span></td>
+        <td class="content-cell">${esc(it.content)}${it.truncated ? "…" : ""}${badges}
+          ${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</td>
+        <td class="num">${it.importance != null ? Number(it.importance).toFixed(2) : "—"}</td>
+        <td class="num">${fmtDate(it.created_at)}</td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
+}
+
+/* ── tasks ── */
+const PRIO_COLOR = { high: "var(--status-serious)", medium: "var(--status-warning)", low: "var(--muted)" };
+function renderTasks(data) {
+  if (!data.tasks.length) {
+    $("tasks").innerHTML = `<div class="empty">No tasks with this status.</div>`;
+    return;
+  }
+  $("tasks").innerHTML = data.tasks.map((t) => `
+    <div class="task">
+      <div class="t-title">${esc(t.title)}</div>
+      ${t.description ? `<div class="meta">${esc(t.description.slice(0, 160))}${t.description.length > 160 ? "…" : ""}</div>` : ""}
+      <div class="meta" style="margin-top:4px">
+        <span class="prio"><span class="swatch" style="background:${PRIO_COLOR[t.priority] || "var(--muted)"}"></span>${esc(t.priority)}</span>
+        &nbsp;·&nbsp; ${esc(t.status)}${t.project ? ` &nbsp;·&nbsp; ${esc(t.project)}` : ""}
+      </div>
+    </div>`).join("");
+}
+
+/* ── data loading ── */
+let overview = null;
+
+async function loadItems() {
+  const collection = $("sel-collection").value;
+  if (!collection) { $("items").innerHTML = `<div class="empty">No collections yet.</div>`; return; }
+  const params = new URLSearchParams({ collection, limit: "50" });
+  if ($("sel-layer").value) params.set("layer", $("sel-layer").value);
+  if ($("chk-deprecated").checked) params.set("include_deprecated", "true");
+  try {
+    renderItems(await api("/dashboard/api/items?" + params));
+  } catch (e) {
+    if (e.message !== "unauthorized") $("items").innerHTML = `<div class="empty">Failed to load memories (${esc(e.message)}).</div>`;
+  }
+}
+
+async function loadTasks() {
+  const params = new URLSearchParams();
+  const status = $("sel-status").value;
+  if (status) params.set("status", status);
+  try {
+    renderTasks(await api("/dashboard/api/tasks?" + params));
+  } catch (e) {
+    if (e.message !== "unauthorized") $("tasks").innerHTML = `<div class="empty">Failed to load tasks (${esc(e.message)}).</div>`;
+  }
+}
+
+async function boot() {
+  try {
+    overview = await api("/dashboard/api/overview");
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      $("auth").style.display = "block";
+      $("err").textContent = "Could not reach the server (" + e.message + ").";
+      $("err").style.display = "block";
+    }
+    return;
+  }
+  $("auth").style.display = "none";
+  $("main").style.display = "block";
+  $("err").style.display = "none";
+
+  renderTiles(overview.totals);
+  renderLayerChart(overview.totals.by_layer);
+  renderStackChart(overview.collections);
+
+  const sel = $("sel-collection");
+  const prev = sel.value;
+  sel.innerHTML = overview.collections.map((c) =>
+    `<option value="${esc(c.collection)}">${esc(c.slug)} (${c.total})</option>`).join("");
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  await Promise.all([loadItems(), loadTasks()]);
+}
+
+$("refresh").addEventListener("click", boot);
+$("sel-collection").addEventListener("change", loadItems);
+$("sel-layer").addEventListener("change", loadItems);
+$("chk-deprecated").addEventListener("change", loadItems);
+$("sel-status").addEventListener("change", loadTasks);
+
+boot();
+</script>
+</body>
+</html>
