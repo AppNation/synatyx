@@ -51,3 +51,4 @@ CTX-EG/
 
 Caddyfile
 ./Caddyfile
+extensions/vscode/*.vsix
