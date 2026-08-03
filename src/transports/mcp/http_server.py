@@ -18,7 +18,14 @@ from src.config import settings
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
-from src.transports.mcp.dashboard import api_items, api_overview, api_tasks, dashboard_page
+from src.transports.mcp.dashboard import (
+    api_graph,
+    api_items,
+    api_overview,
+    api_tasks,
+    api_users,
+    dashboard_page,
+)
 from src.transports.mcp.server import SynatyxMCPServer
 
 logger = logging.getLogger(__name__)
@@ -212,6 +219,8 @@ app = Starlette(
         Route("/dashboard/api/overview", api_overview),
         Route("/dashboard/api/items", api_items),
         Route("/dashboard/api/tasks", api_tasks),
+        Route("/dashboard/api/users", api_users),
+        Route("/dashboard/api/graph", api_graph),
     ],
     middleware=_middleware,
     lifespan=lifespan,

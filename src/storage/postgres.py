@@ -431,6 +431,27 @@ class PostgresStorage:
             result = await session.execute(stmt)
             return [self._row_to_relation(r) for r in result.scalars().all()]
 
+    async def relation_list_all(
+        self,
+        item_ids: list[str],
+        limit: int = 500,
+    ) -> list[MemoryRelation]:
+        """List edges touching the given items across ALL users — dashboard use only."""
+        if not item_ids:
+            return []
+        async with self._session_factory() as session:
+            stmt = (
+                select(MemoryRelationRow)
+                .where(or_(
+                    MemoryRelationRow.source_item_id.in_(item_ids),
+                    MemoryRelationRow.target_item_id.in_(item_ids),
+                ))
+                .order_by(MemoryRelationRow.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [self._row_to_relation(r) for r in result.scalars().all()]
+
     async def relation_delete(
         self,
         user_id: str,
