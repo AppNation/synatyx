@@ -236,3 +236,31 @@ def test_diagnostics_layers_missed() -> None:
     assert diag["filters_applied"] == []
     assert "L3" in diag["hint"]
     assert diag["items_by_layer"]["L2"] == 5
+
+
+async def test_brief_open_tasks_scoped_to_project() -> None:
+    svc = _service(
+        project_items=[],
+        tasks=[
+            Task(user_id="u1", title="this project", project="p1"),
+            Task(user_id="u1", title="other project", project="p2"),
+            Task(user_id="u1", title="no project"),
+        ],
+    )
+    brief = await svc.brief("u1", project="p1")
+    titles = [t["title"] for t in brief["open_tasks"]]
+    assert titles == ["this project"]
+
+
+async def test_brief_without_project_keeps_legacy_unfiltered_tasks() -> None:
+    # dispatch always resolves a project when one is determinable; a truly
+    # unscoped brief (no project anywhere) still returns everything
+    svc = _service(
+        project_items=[],
+        tasks=[
+            Task(user_id="u1", title="a", project="p1"),
+            Task(user_id="u1", title="b", project="p2"),
+        ],
+    )
+    brief = await svc.brief("u1")
+    assert len(brief["open_tasks"]) == 2
