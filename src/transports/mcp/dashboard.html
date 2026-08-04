@@ -77,6 +77,19 @@
   select option { background: #12111c; color: var(--ink); }
   input[type="checkbox"] { accent-color: var(--violet); }
 
+  /* Visualize page: full-bleed split — graph fills the left of the whole
+     browser, chunks dock on the right */
+  body.fullbleed { padding: 16px; }
+  body.fullbleed .wrap { max-width: none; }
+  .vis-split {
+    display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(340px, 1fr);
+    gap: 16px; height: calc(100vh - 148px); min-height: 420px;
+  }
+  @media (max-width: 900px) { .vis-split { grid-template-columns: 1fr; height: auto; } }
+  .vis-left { display: flex; flex-direction: column; min-width: 0; }
+  .vis-left #index-graph { flex: 1; min-height: 0; }
+  .vis-right { overflow-y: auto; min-width: 0; }
+
   .nav { display: flex; gap: 8px; margin-bottom: 18px; }
   .nav .tab {
     text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px;
@@ -225,6 +238,7 @@
     <button class="tab active" data-view="overview">Overview</button>
     <button class="tab" data-view="memories">Recent memories</button>
     <button class="tab" data-view="indexes">Code indexes</button>
+    <button class="tab" data-view="visualize">Visualize</button>
   </nav>
 
   <div id="view-overview">
@@ -311,35 +325,38 @@
   </div><!-- /view-memories -->
 
   <div id="view-indexes" style="display:none">
-    <div class="card" style="margin-bottom:16px">
+    <div class="card">
       <h2>Code indexes — one collection per project (ctx_&lt;slug&gt;__index)</h2>
       <div id="indexes"></div>
     </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <h2>Index map — 3D · files by directory · drag rotate · scroll zoom · right-drag pan · click file to focus + inspect · dbl-click reset</h2>
-      <div class="controls">
-        <label>Project
-          <select id="sel-index"></select>
-        </label>
-        <span class="sub" id="index-graph-stats" style="color:var(--muted);font-size:12px"></span>
-      </div>
-      <div class="legend" id="index-legend"></div>
-      <div id="index-graph"></div>
-    </div>
-
-    <div class="card">
-      <h2>Chunks</h2>
-      <div class="controls">
-        <label>Filter
-          <input id="chunk-filter" type="text" placeholder="path or symbol…"
-                 style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;width:240px">
-        </label>
-        <span class="sub" id="chunk-stats" style="color:var(--muted);font-size:12px"></span>
-      </div>
-      <div id="index-chunks"></div>
-    </div>
   </div><!-- /view-indexes -->
+
+  <div id="view-visualize" style="display:none">
+    <div class="vis-split">
+      <div class="card vis-left">
+        <h2>Index map — 3D · drag rotate · scroll zoom · right-drag pan · click file to inspect · dbl-click reset</h2>
+        <div class="controls">
+          <label>Project
+            <select id="sel-index"></select>
+          </label>
+          <span class="sub" id="index-graph-stats" style="color:var(--muted);font-size:12px"></span>
+        </div>
+        <div class="legend" id="index-legend"></div>
+        <div id="index-graph"></div>
+      </div>
+      <div class="card vis-right">
+        <h2>Chunks</h2>
+        <div class="controls">
+          <label>Filter
+            <input id="chunk-filter" type="text" placeholder="path or symbol…"
+                   style="font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;width:220px">
+          </label>
+          <span class="sub" id="chunk-stats" style="color:var(--muted);font-size:12px"></span>
+        </div>
+        <div id="index-chunks"></div>
+      </div>
+    </div>
+  </div><!-- /view-visualize -->
 </div>
 
 <div id="tooltip"></div>
@@ -673,7 +690,10 @@ function render3D(data, opts) {
   box.appendChild(canvas);
   const ctx = canvas.getContext("2d");
   const DPR = Math.min(2, window.devicePixelRatio || 1);
-  const CSS_H = Math.max(340, Math.min(560, 180 + nodes.length * 1.4));
+  /* fill mode stretches to the container (Visualize page); otherwise a
+     content-scaled fixed height */
+  const fixedH = Math.max(340, Math.min(560, 180 + nodes.length * 1.4));
+  const cssH = () => (opts.fill ? Math.max(320, box.clientHeight || 500) : fixedH);
   const HIGHLIGHT = opts.highlight || "#67e8f9";
 
   let yaw = 0.6, pitch = 0.26, zoom = 1, panX = 0, panY = 0;
@@ -785,11 +805,12 @@ function render3D(data, opts) {
 
   function resize() {
     const w = box.clientWidth || 1100;
-    canvas.width = w * DPR; canvas.height = CSS_H * DPR;
-    canvas.style.height = CSS_H + "px";
-    /* fit the cloud to the canvas — R is the layout sphere radius, which
-       projects to ≈R px at z=0, so scale it to ~84% of the short side */
-    baseZoom = Math.max(0.4, Math.min(3.5, (Math.min(w, CSS_H) * 0.42) / cloudR));
+    const h = cssH();
+    canvas.width = w * DPR; canvas.height = h * DPR;
+    canvas.style.height = h + "px";
+    /* fit the cloud to the canvas — the measured cloud radius projects to
+       ≈cloudR px at z=0, so scale it to ~84% of the short side */
+    baseZoom = Math.max(0.4, Math.min(3.5, (Math.min(w, h) * 0.42) / cloudR));
     if (!userZoomed) zoom = baseZoom;
     draw();
   }
@@ -965,6 +986,7 @@ async function loadIndexGraph() {
     `<span class="key"><span class="swatch" style="background:#8b90a6"></span>directory</span>`;
   render3D(data, {
     box,
+    fill: true,
     statsEl: $("index-graph-stats"),
     edgeWord: "links",
     color: codeNodeColor,
@@ -997,20 +1019,16 @@ async function loadIndexChunks() {
     el.innerHTML = `<div class="empty">No chunks match.</div>`;
     return;
   }
-  el.innerHTML =
-    '<table><thead><tr><th>Path</th><th>Symbol</th><th>Kind</th>' +
-    '<th class="num">Lines</th><th>Preview</th></tr></thead><tbody>' +
-    data.chunks.map((c) => {
-      const lines = c.line_start ? `${c.line_start}–${c.line_end || "?"}` : "—";
-      const idx = c.chunk_total > 1 ? `<span class="badge">${c.chunk_index + 1}/${c.chunk_total}</span>` : "";
-      return `<tr>
-        <td class="mono" style="font-size:12px">${esc(c.path)}${idx}</td>
-        <td class="mono" style="font-size:12px">${esc(c.symbol || "—")}</td>
-        <td>${esc(c.kind || "—")}</td>
-        <td class="num">${lines}</td>
-        <td class="content-cell mono dim" style="font-size:11px">${esc(c.preview)}${c.preview.length >= 220 ? "…" : ""}</td>
-      </tr>`;
-    }).join("") + "</tbody></table>";
+  /* compact stacked rows — fits the narrow chunks pane */
+  el.innerHTML = data.chunks.map((c) => {
+    const lines = c.line_start ? ` · L${c.line_start}–${c.line_end || "?"}` : "";
+    const idx = c.chunk_total > 1 ? `<span class="badge">${c.chunk_index + 1}/${c.chunk_total}</span>` : "";
+    return `<div class="task">
+      <div class="mono" style="font-size:12px;color:var(--ink)">${esc(c.path)}${idx}</div>
+      <div class="meta">${esc(c.symbol || "—")} · ${esc(c.kind || "chunk")}${lines}</div>
+      <div class="mono dim" style="font-size:11px;margin-top:4px;overflow-wrap:anywhere">${esc(c.preview)}${c.preview.length >= 220 ? "…" : ""}</div>
+    </div>`;
+  }).join("");
 }
 
 /* ── tasks ── */
@@ -1142,14 +1160,15 @@ async function loadIndexes() {
 }
 
 /* ── view tabs ─────────────────────────────────────────────────────────── */
-const VIEWS = ["overview", "memories", "indexes"];
+const VIEWS = ["overview", "memories", "indexes", "visualize"];
 function showView(name) {
   for (const v of VIEWS) $("view-" + v).style.display = v === name ? "" : "none";
   document.querySelectorAll(".nav .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.view === name));
+  document.body.classList.toggle("fullbleed", name === "visualize");
   sessionStorage.setItem("synatyx_view", name);
-  // the 3D graph canvas sizes from its container — re-measure when revealed
-  if (name === "overview") window.dispatchEvent(new Event("resize"));
+  // the 3D graph canvases size from their containers — re-measure on reveal
+  if (name === "overview" || name === "visualize") window.dispatchEvent(new Event("resize"));
 }
 document.querySelectorAll(".nav .tab").forEach((btn) =>
   btn.addEventListener("click", () => showView(btn.dataset.view)));
