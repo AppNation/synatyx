@@ -11,11 +11,11 @@
         },
         "session_id": {
           "type": "string",
-          "description": "Project slug — scopes open_tasks and L1 session context"
+          "description": "Project slug — when no explicit project is passed, this scopes the WHOLE brief (collection routing, memories, and open_tasks) to that project"
         },
         "project": {
           "type": "string",
-          "description": "Project name filter for Qdrant-level isolation (optional)"
+          "description": "Project slug — scopes the whole brief to this project only (memories, recent changes, attempts, open_tasks). Falls back to session_id, then the active project (optional)"
         },
         "max_tokens": {
           "type": "integer",
