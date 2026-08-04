@@ -11,8 +11,8 @@ One-call session-start digest — call this FIRST in every new conversation inst
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `user_id` | string | yes | User identifier |
-| `session_id` | string | no | Project slug — scopes open_tasks and L1 session context |
-| `project` | string | no | Project name filter for Qdrant-level isolation (optional) |
+| `session_id` | string | no | Project slug — when no explicit project is passed, this scopes the WHOLE brief (collection routing, memories, and open_tasks) to that project |
+| `project` | string | no | Project slug — scopes the whole brief to this project only (memories, recent changes, attempts, open_tasks). Falls back to session_id, then the active project (optional) |
 | `max_tokens` | integer | no | Token budget for the whole briefing (default: 2000) |
 | `recent_days` | integer | no | Window for the recent_changes section in days (default: 7) |
 

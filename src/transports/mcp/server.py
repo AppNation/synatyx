@@ -411,6 +411,18 @@ class SynatyxMCPServer:
                 ),
             }
 
+        # context_brief documents session_id as the project slug — treat it as
+        # the project when no explicit one is passed, so a brief is always
+        # scoped to the caller's project (collection routing AND the Postgres
+        # task filter), immune to the shared active-pointer race.
+        if (
+            name == "context_brief"
+            and not (isinstance(args.get("project"), str) and args["project"].strip())
+            and isinstance(args.get("session_id"), str)
+            and args["session_id"].strip()
+        ):
+            args["project"] = args["session_id"]
+
         # ── All other tools ──────────────────────────────────────────────────
         # Normalize the project argument to its canonical slug once — points
         # carry the slug in their payload, so filters must compare slugs, and
@@ -436,9 +448,11 @@ class SynatyxMCPServer:
             l4_storage = await self._project_manager.get_l4_storage()
             brief_svc = BriefService(storage, l4_storage, self._postgres)
             slug = await self._project_manager.get_project(user_id)
+            # Fall back to the active-pointer slug so open_tasks (Postgres,
+            # cross-project by nature) is always filtered to one project.
             brief_result = await brief_svc.brief(
                 user_id=user_id,
-                project=args.get("project"),
+                project=args.get("project") or slug,
                 session_id=args.get("session_id"),
                 max_tokens=args.get("max_tokens", 2000),
                 recent_days=args.get("recent_days", 7),
