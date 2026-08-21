@@ -312,6 +312,71 @@ async def index_files(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Live call feed — every MCP tool call is published to the in-process event
+# bus (src/core/events.py). /events/calls streams them as SSE for the
+# VS Code call-monitor panel; /dashboard/api/calls serves the replay ring
+# buffer for history-on-open. Both sit behind the admin-key middleware.
+# ---------------------------------------------------------------------------
+
+async def _sse_call_stream(
+    project: str | None, replay: int, *, ping_seconds: float = 25
+):
+    """SSE frames for the call feed: buffered replay first, then live events.
+    Factored out of the route so tests can drive (and close) it directly."""
+    import asyncio
+    import json
+
+    from src.core.events import event_bus
+
+    queue = event_bus.subscribe()
+    try:
+        for event in event_bus.recent(project=project, limit=replay):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=ping_seconds)
+            except TimeoutError:
+                # keep-alive comment so proxies don't cut the stream
+                yield ": ping\n\n"
+                continue
+            if project is not None and event.get("project") != project:
+                continue
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+    finally:
+        event_bus.unsubscribe(queue)
+
+
+async def events_calls(request: Request):
+    from starlette.responses import StreamingResponse
+
+    if not settings.events.enabled:
+        return JSONResponse({"error": "events disabled"}, status_code=404)
+
+    project = request.query_params.get("project") or None
+    try:
+        replay = max(0, min(int(request.query_params.get("replay", 0)), 500))
+    except ValueError:
+        return JSONResponse({"error": "replay must be an integer"}, status_code=400)
+
+    return StreamingResponse(
+        _sse_call_stream(project, replay),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def api_calls(request: Request) -> JSONResponse:
+    from src.core.events import event_bus
+
+    project = request.query_params.get("project") or None
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", 100)), 500))
+    except ValueError:
+        return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+    return JSONResponse({"calls": event_bus.recent(project=project, limit=limit)})
+
+
+# ---------------------------------------------------------------------------
 # ASGI app — streamable-HTTP (modern, /mcp) + legacy SSE (deprecated,
 # /mcp/sse) + /health + /capture + dashboard, wrapped with lifespan.
 # ---------------------------------------------------------------------------
@@ -356,6 +421,8 @@ app = Starlette(
         Route("/dashboard/api/index_graph", api_index_graph),
         Route("/dashboard/api/index_chunks", api_index_chunks),
         Route("/dashboard/api/usage", api_usage),
+        Route("/dashboard/api/calls", api_calls),
+        Route("/events/calls", events_calls),
     ],
     middleware=_middleware,
     lifespan=lifespan,

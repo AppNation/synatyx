@@ -221,6 +221,28 @@ class UsageSettings(BaseSettings):
     )
 
 
+class EventsSettings(BaseSettings):
+    """Live tool-call event feed — /events/calls SSE + /dashboard/api/calls.
+
+    Feeds the VS Code call-monitor panel. Payloads (arguments/response) are
+    memory content, so capture is truncatable and can be switched off while
+    keeping the metadata-only feed (tool, duration, tokens, errors).
+    """
+
+    enabled: bool = True
+    # Include truncated tool arguments and responses in events. Off = the
+    # feed carries only call metadata.
+    capture_payloads: bool = True
+    # Truncation limit per payload (arguments and response independently).
+    max_payload_bytes: int = 4096
+    # Replay ring buffer size (in-memory, per process — not persisted).
+    buffer_size: int = 500
+
+    model_config = SettingsConfigDict(
+        env_prefix="EVENTS_", env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+    )
+
+
 def _default_user_id() -> str:
     import getpass
     try:
@@ -256,6 +278,7 @@ class Settings(BaseSettings):
     tracking: TrackingSettings = Field(default_factory=TrackingSettings)
     index: IndexSettings = Field(default_factory=IndexSettings)
     usage: UsageSettings = Field(default_factory=UsageSettings)
+    events: EventsSettings = Field(default_factory=EventsSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

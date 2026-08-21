@@ -8,7 +8,7 @@ Not just memory — assembled context. Synatyx stores what your agent learns, in
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-31%20tools-purple)](docs/mcp-tools.md)
+[![MCP](https://img.shields.io/badge/MCP-32%20tools-purple)](docs/mcp-tools.md)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker&logoColor=white)](docker-compose.yml)
 
 </div>
@@ -85,6 +85,9 @@ File-hash staleness detection, type-aware TTL decay, background consolidation, a
 **🔖 Checkpoints, tasks, skills**
 Pin decisions as named snapshots, track tasks across sessions, RAG-search agent skill definitions.
 
+**📊 Token spend metering**
+Every tool call is metered — context tokens injected into the agent, argument tokens received, and embedding-API tokens with estimated cost. `context_usage` reports totals grouped by tool, project, or day; the dashboard has a Usage tab.
+
 **🏭 Production-ready**
 Streamable-HTTP transport (stateless — deploys don't strand clients), Docker Compose, Alembic migrations, health checks, admin dashboard.
 
@@ -119,7 +122,7 @@ make                   # starts everything + tails logs
 | Doc | What's inside |
 |-----|--------------|
 | [Local Setup](docs/local-setup.md) | Prerequisites, Docker, IDE config, Makefile reference, troubleshooting |
-| [MCP Tools Reference](docs/mcp-tools.md) | All 31 tools — generated from `tools.json` |
+| [MCP Tools Reference](docs/mcp-tools.md) | All 32 tools — generated from `tools.json` |
 | [Context Pack](docs/context-pack.md) | Task-driven context assembly — sections, budgeting, rendered output |
 | [Code & Doc Index](docs/code-index.md) | Persistent per-project indexing + hybrid exact-symbol search |
 | [Architecture](docs/architecture.md) | 4-layer memory model, retrieval pipeline, tech stack, project structure |
