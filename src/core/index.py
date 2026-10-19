@@ -44,8 +44,14 @@ DEFAULT_EXCLUDES = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
     "dist", "build", "target", ".next", ".mypy_cache", ".pytest_cache",
     ".ruff_cache", ".idea", ".vscode",
+    # Dart / Flutter
+    ".dart_tool", "Pods", ".gradle",
 }
-EXCLUDED_FILES = {"uv.lock", "package-lock.json", "yarn.lock", "poetry.lock"}
+EXCLUDED_FILES = {
+    "uv.lock", "package-lock.json", "yarn.lock", "poetry.lock",
+    # Dart / Flutter
+    "pubspec.lock", ".flutter-plugins", ".flutter-plugins-dependencies",
+}
 
 # Limits on one push/remove call (context_index_push / context_index_remove and
 # their REST routes). A pusher splits larger sets into batches; the byte cap
@@ -128,6 +134,24 @@ def chunk_point_id(slug: str, rel_path: str, chunk_index: int) -> str:
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+SOURCE_NOT_ON_SERVER = "SOURCE_NOT_ON_SERVER"
+
+SOURCE_NOT_ON_SERVER_HINT = (
+    "context_index reads files from the server's own disk, and this path does not exist "
+    "there. This server indexes files pushed from your machine. Install the local indexer "
+    "once with: curl -s -H \"X-Auth-Key: $KEY\" <server>/index/install "
+    "| SYNATYX_AUTH_KEY=$KEY sh  -- or push file contents directly with context_index_push."
+)
+
+
+class SourceNotOnServerError(FileNotFoundError):
+    """context_index was given a path that is not on the server's disk."""
+
+    def __init__(self, source: str) -> None:
+        super().__init__(f"source not found or matched no files: {source}")
+        self.source = source
 
 
 @dataclass
@@ -398,7 +422,7 @@ class IndexService:
             import glob as _glob
             files = [Path(p) for p in _glob.glob(str(src), recursive=True) if Path(p).is_file()]
             if not files:
-                raise FileNotFoundError(f"source not found or matched no files: {source}")
+                raise SourceNotOnServerError(source)
             src = Path(os.path.commonpath([str(f) for f in files]))
 
         candidates = []
