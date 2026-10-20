@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import functools
+import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.core.budget import estimate_tokens
 from src.models.context import ContextItem
+from src.models.handoff import OPEN_HANDOFF_STATUSES
 from src.models.memory_layer import MemoryLayer
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
@@ -17,10 +20,11 @@ logger = logging.getLogger(__name__)
 SECTION_BUDGET: dict[str, float] = {
     "identity": 0.15,          # L4 — who the user is, how they work
     "last_session": 0.15,      # L2 — what happened recently
-    "project_knowledge": 0.35, # L3 — checkpoints + stable facts
+    "project_knowledge": 0.30, # L3 — checkpoints + stable facts
     "recent_changes": 0.15,    # anything new since the agent was last here
     "recent_attempts": 0.10,   # tried-and-failed records — don't repeat dead ends
     "open_tasks": 0.10,
+    "open_handoffs": 0.05,     # only spent when an assignee is passed
 }
 
 # Items whose metadata.type matches these are internal records, not briefing
@@ -34,7 +38,7 @@ _SCAN_LIMIT = 500  # max items scrolled per collection when composing a brief
 
 def _created_at(item: ContextItem) -> datetime:
     ts = item.created_at
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
 def _dump(item: ContextItem, max_chars: int | None = None) -> dict[str, Any]:
@@ -74,7 +78,7 @@ def _fit(items: list[ContextItem], budget_tokens: int) -> tuple[list[dict[str, A
     entries = [
         BudgetEntry(
             tokens=item.token_estimate,
-            payload=(lambda i=item: _dump(i)),
+            payload=functools.partial(_dump, item),
             raw_content=item.content,
         )
         for item in items
@@ -109,9 +113,16 @@ class BriefService:
         session_id: str | None = None,
         max_tokens: int = 2000,
         recent_days: int = 7,
+        assignee: str | None = None,
     ) -> dict[str, Any]:
         budgets = {k: int(max_tokens * v) for k, v in SECTION_BUDGET.items()}
-        now = datetime.now(timezone.utc)
+        if assignee is None:
+            # No handoff section: give its share back so the output matches
+            # what the brief returned before handoffs existed.
+            budgets["project_knowledge"] = int(
+                max_tokens * (SECTION_BUDGET["project_knowledge"] + SECTION_BUDGET["open_handoffs"])
+            )
+        now = datetime.now(UTC)
         recent_cutoff = now - timedelta(days=recent_days)
 
         l4_items = await self._l4_storage.list_items(
@@ -161,7 +172,7 @@ class BriefService:
         open_tasks, task_tokens = await self._open_tasks(user_id, project, budgets["open_tasks"])
         stats = await self._stats(user_id, project)
 
-        return {
+        brief_out: dict[str, Any] = {
             "identity": identity,
             "last_session": last_session,
             "project_knowledge": knowledge,
@@ -176,6 +187,46 @@ class BriefService:
             "max_tokens": max_tokens,
             "recent_days": recent_days,
         }
+        if assignee is not None:
+            open_handoffs, handoff_tokens = await self._open_handoffs(
+                user_id, project, assignee, budgets["open_handoffs"]
+            )
+            brief_out["open_handoffs"] = open_handoffs
+            brief_out["token_estimate"] += handoff_tokens
+        return brief_out
+
+    async def _open_handoffs(
+        self, user_id: str, project: str | None, assignee: str, budget_tokens: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """The caller's open handoffs: metadata only, never the body."""
+        try:
+            handoffs = await self._postgres.handoff_list(
+                user_id,
+                project=project,
+                assignee=assignee,
+                statuses=list(OPEN_HANDOFF_STATUSES),
+            )
+        except Exception:
+            logger.warning("Brief: handoff lookup failed — omitting open_handoffs")
+            return [], 0
+
+        entries: list[dict[str, Any]] = []
+        used = 0
+        for h in handoffs:
+            entry = {
+                "id": h.id,
+                "slug": h.slug,
+                "title": h.title,
+                "status": h.status.value,
+                "version": h.version,
+                "updated_at": h.updated_at.isoformat(),
+            }
+            tokens = estimate_tokens(json.dumps(entry))
+            if used + tokens > budget_tokens and entries:
+                break
+            entries.append(entry)
+            used += tokens
+        return entries, used
 
     async def _open_tasks(
         self, user_id: str, project: str | None, budget_tokens: int

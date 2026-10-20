@@ -1,3 +1,8 @@
+> **Deprecated.** This extension will be removed in a later release. Use the
+> installer instead: `python scripts/index_project.py install --url <server>`
+> keeps the index fresh from Claude Code sessions with no editor extension. See
+> [Automatic indexing](../../docs/code-index.md#automatic-indexing).
+
 # Synatyx Indexer — VS Code / Cursor extension
 
 Keeps the open workspace pushed into a [Synatyx](https://github.com/tanerincode/synatyx)
@@ -19,9 +24,11 @@ Works in **VS Code** and **Cursor** (Cursor installs VS Code extensions).
 ## Setup (per developer, once)
 
 1. Install the extension (`.vsix` or marketplace, see below)
-2. `Cmd/Ctrl+Shift+P` → **Synatyx: Set Auth Key** → paste the team key
-3. Done. Settings (`synatyx.*`) let you override the server URL, user id,
-   project slug, and the on-save/on-startup behavior.
+2. Set `synatyx.url` to your server, e.g. `https://synatyx.example.com`
+   (there is no default; until it is set the status bar says so)
+3. `Cmd/Ctrl+Shift+P` → **Synatyx: Set Auth Key** → paste the team key
+4. Done. Settings (`synatyx.*`) also let you override the user id, project
+   slug, and the on-save/on-startup behavior.
 
 ## Commands
 

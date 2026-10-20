@@ -7,6 +7,7 @@
 | Docker | 24+ | With Docker Compose v2 |
 | Python | 3.12+ | |
 | uv | latest | `pip install uv` |
+| Dev environment | locked | Set it up with `uv sync --all-extras --frozen` so ruff, mypy and redis match `uv.lock` |
 | OpenAI API Key | — | For embeddings + LLM summarization |
 
 ---
@@ -130,6 +131,12 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | **Tasks** | `context_task_add` | Add a task to remember for later |
 | | `context_task_list` | List tasks by status, priority, project |
 | | `context_task_update` | Update status, priority, or description |
+| **Handoffs** | `context_handoff_create` | Create a versioned brief for another agent or session |
+| | `context_handoff_get` | Fetch a handoff with its body and latest reports |
+| | `context_handoff_list` | List handoffs by project, assignee, status (no body) |
+| | `context_handoff_update` | Edit body, title, status or assignee |
+| | `context_handoff_report` | Append a progress report, optionally moving status |
+| | `context_handoff_mine` | List your open handoffs |
 | **Skills** | `context_skill_store` | Save an agent skill definition (PG + Qdrant L3) |
 | | `context_skill_find` | RAG search for the best matching skill |
 | | `context_skill_get` | Fetch a skill by name or slug |
@@ -182,8 +189,16 @@ Qdrant: True
 | `make lint` | Run ruff linter |
 | `make format` | Run ruff formatter |
 | `make typecheck` | Run mypy |
-| `make test` | Run pytest |
+| `make test` | Run pytest (integration tests skip when Postgres is unreachable) |
+| `make test-integration` | Run only `tests/integration` against a real Postgres |
 | `make check` | lint + typecheck + test |
+
+**Integration tests.** `tests/integration` runs the handoff storage and the Alembic
+migrations against a real Postgres. It creates a scratch database `synatyx_it_<pid>_*` on
+the server named by `SYNATYX_IT_DATABASE_URL` (default
+`postgresql://context_engine:context_engine@localhost:5432/context_engine`, the
+`docker-compose.local.yml` Postgres) and drops it afterwards; your own data is untouched.
+If the server is unreachable every test skips.
 
 ---
 

@@ -4,9 +4,10 @@ import hmac
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any
 
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import ProviderTokenVerifier, TokenVerifier
@@ -15,7 +16,7 @@ from starlette.applications import Starlette
 from starlette.authentication import AuthCredentials
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -24,18 +25,7 @@ from src.core.oauth import SynatyxOAuthProvider
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
-from src.transports.mcp.dashboard import (
-    api_graph,
-    api_index_chunks,
-    api_index_graph,
-    api_indexes,
-    api_items,
-    api_overview,
-    api_tasks,
-    api_usage,
-    api_users,
-    dashboard_page,
-)
+from src.transports.mcp.dashboard import DASHBOARD_ROUTES
 from src.transports.mcp.oauth import (
     LOGIN_PATH,
     PUBLIC_OAUTH_PATHS,
@@ -58,6 +48,11 @@ logger = logging.getLogger(__name__)
 # through the MCP SDK's TokenVerifier). Public paths (/health, the OAuth
 # endpoints, /.well-known/*) bypass the check entirely.
 # ---------------------------------------------------------------------------
+
+# Dashboard web app vs its data API (see AdminKeyAuthMiddleware._is_public).
+_DASHBOARD_APP_PREFIX = "/dashboard/"
+_DASHBOARD_API_PREFIX = "/dashboard/api"
+
 
 class AdminKeyAuthMiddleware:
     def __init__(
@@ -95,6 +90,16 @@ class AdminKeyAuthMiddleware:
         await response(scope, receive, send)
 
     def _is_public(self, path: str) -> bool:
+        # The dashboard web app (HTML shell, client routes, hashed assets) is
+        # public: a browser opening /dashboard/briefs/x sends no credential, and
+        # none of those responses carry data. Its data API is not: anything
+        # starting with /dashboard/api (no trailing slash, so /dashboard/api and
+        # /dashboard/apix stay private too) needs a key. `path` is the decoded
+        # scope["path"] the router matches on.
+        if path.startswith(_DASHBOARD_API_PREFIX):
+            return False
+        if path.startswith(_DASHBOARD_APP_PREFIX):
+            return True
         return path in self._public_paths or path.startswith(self._public_prefixes)
 
     def _is_authorized(self, headers: dict[bytes, bytes]) -> bool:
@@ -227,7 +232,7 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 # Health endpoint
 # ---------------------------------------------------------------------------
 
-def server_info() -> dict:
+def server_info() -> dict[str, Any]:
     """Build/runtime identity shown on /health and the dashboard — makes it
     obvious at a glance which build (local vs prod) a server is running."""
     from src.transports.mcp.tools import TOOL_DEFINITIONS
@@ -291,7 +296,7 @@ async def capture(request: Request) -> JSONResponse:
 # Used by scripts/index_project.py; protected by the admin-key middleware.
 # ---------------------------------------------------------------------------
 
-async def _index_service_from(request: Request):
+async def _index_service_from(request: Request) -> tuple[Any, JSONResponse | None]:
     synatyx = getattr(request.app.state, "synatyx", None)
     if synatyx is None:
         return None, JSONResponse({"error": "server not ready"}, status_code=503)
@@ -310,7 +315,7 @@ async def _index_service_from(request: Request):
     return (svc, user_id, body), None
 
 
-async def index_script(_request: Request):
+async def index_script(_request: Request) -> Response:
     """Serve scripts/index_project.py so clients can self-update:
     curl -s -H "X-Auth-Key: $KEY" $URL/index/script | python3 - --root .
     Developers never need the Synatyx repo — the script version always
@@ -321,6 +326,22 @@ async def index_script(_request: Request):
         return PlainTextResponse(script.read_text(encoding="utf-8"))
     except OSError:
         return JSONResponse({"error": "script not available"}, status_code=404)
+
+
+async def index_install(request: Request) -> Response:
+    """Serve the POSIX sh installer for the local indexer:
+    curl -s -H "X-Auth-Key: $KEY" $URL/index/install | SYNATYX_AUTH_KEY=$KEY sh
+    The script embeds this server's own URL (forwarded headers, else the
+    configured public URL, else the request URL)."""
+    from starlette.responses import PlainTextResponse
+
+    from src.transports.mcp.index_install import render_install_script, resolve_base_url
+
+    try:
+        url = resolve_base_url(request, settings.public_url)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return PlainTextResponse(render_install_script(url))
 
 
 async def index_diff(request: Request) -> JSONResponse:
@@ -368,7 +389,9 @@ async def index_files(request: Request) -> JSONResponse:
     await request.app.state.synatyx._usage.record(
         user_id=user_id,
         tool="index_push",
-        input_tokens=estimate_tokens("".join(str(f.get("content", "")) for f in files if isinstance(f, dict))),
+        input_tokens=estimate_tokens(
+            "".join(str(f.get("content", "")) for f in files if isinstance(f, dict))
+        ),
         output_tokens=0,
         embedding_tokens=usage_end(),
         project=body.get("project") or None,
@@ -459,16 +482,8 @@ app = Starlette(
         Route("/index/diff", index_diff, methods=["POST"]),
         Route("/index/files", index_files, methods=["POST"]),
         Route("/index/script", index_script),
-        Route("/dashboard", dashboard_page),
-        Route("/dashboard/api/overview", api_overview),
-        Route("/dashboard/api/items", api_items),
-        Route("/dashboard/api/tasks", api_tasks),
-        Route("/dashboard/api/users", api_users),
-        Route("/dashboard/api/graph", api_graph),
-        Route("/dashboard/api/indexes", api_indexes),
-        Route("/dashboard/api/index_graph", api_index_graph),
-        Route("/dashboard/api/index_chunks", api_index_chunks),
-        Route("/dashboard/api/usage", api_usage),
+        Route("/index/install", index_install),
+        *DASHBOARD_ROUTES,
     ],
     middleware=_middleware,
     lifespan=lifespan,
