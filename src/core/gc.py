@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.config import GCSettings
@@ -58,12 +58,27 @@ class GarbageCollector:
         retention = _app_settings.usage.retention_days
         if retention > 0:
             try:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=retention)
+                cutoff = datetime.now(UTC) - timedelta(days=retention)
                 pruned = await self._postgres.usage_prune(before=cutoff)
                 if pruned:
-                    logger.info("GC run %s pruned %d tool_usage rows older than %dd", run_id, pruned, retention)
+                    logger.info(
+                        "GC run %s pruned %d tool_usage rows older than %dd",
+                        run_id, pruned, retention,
+                    )
             except Exception:
                 logger.exception("tool_usage prune failed")
+
+        # Anonymous OAuth registrations that never completed a handshake are
+        # also pruned lazily on /register; this keeps the table bounded even
+        # when nobody registers for a while.
+        try:
+            stale = await self._postgres.oauth_client_prune_unused(
+                _app_settings.oauth.unused_client_ttl_seconds
+            )
+            if stale:
+                logger.info("GC run %s pruned %d unused OAuth client registrations", run_id, stale)
+        except Exception:
+            logger.exception("oauth_clients prune failed")
 
         logger.info(
             "GC run %s finished — deprecated=%d deleted=%d skipped=%d",
@@ -80,7 +95,7 @@ class GarbageCollector:
         self, qdrant: QdrantStorage, collection: str, run_id: str
     ) -> dict[str, int]:
         stats = {"deprecated": 0, "deleted": 0, "skipped": 0}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Phase 2: hard-delete already-deprecated items past grace period
         offset: str | None = None
@@ -96,7 +111,7 @@ class GarbageCollector:
                     continue
                 deprecated_at = datetime.fromisoformat(deprecated_at_raw)
                 if deprecated_at.tzinfo is None:
-                    deprecated_at = deprecated_at.replace(tzinfo=timezone.utc)
+                    deprecated_at = deprecated_at.replace(tzinfo=UTC)
                 if (now - deprecated_at).days >= self._settings.grace_period_days:
                     item_id = item["_id"]
                     await qdrant.hard_delete(item_id)
@@ -149,7 +164,7 @@ class GarbageCollector:
 
         last_touched = datetime.fromisoformat(last_touched_raw)
         if last_touched.tzinfo is None:
-            last_touched = last_touched.replace(tzinfo=timezone.utc)
+            last_touched = last_touched.replace(tzinfo=UTC)
 
         if (now - last_touched) < timedelta(days=effective_ttl):
             return "skipped"

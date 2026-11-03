@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, cast
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -12,7 +13,9 @@ from src.core.alternatives import AlternativesService
 from src.core.brief import BriefService
 from src.core.budget import BudgetManager, estimate_tokens
 from src.core.events import event_bus
+from src.core.handoff import HandoffService
 from src.core.ingest import IngestService
+from src.core.message import AUTH_SCOPE_KEY, MessageService
 from src.core.project import ProjectManager
 from src.core.relation import RelationService
 from src.core.retrieve import RetrieveService, empty_retrieve_diagnostics
@@ -22,13 +25,148 @@ from src.core.store import StoreService
 from src.core.summarize import SummarizeService
 from src.core.tracking import SessionTracker
 from src.core.usage import UsageRecorder, usage_begin, usage_end
+from src.models.handoff import Handoff, HandoffReport, HandoffStatus
 from src.models.memory_layer import MemoryLayer
+from src.models.message import Message, MessageBox, MessageKind, MessageStatus, message_notice
 from src.storage.postgres import PostgresStorage
 from src.storage.qdrant import QdrantStorage
 from src.storage.redis import RedisStorage
 from src.transports.mcp.tools import TOOL_DEFINITIONS
 
+if TYPE_CHECKING:
+    from src.core.index import IndexSearchService, IndexService
+    from src.core.pack import PackService
+
 logger = logging.getLogger(__name__)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _handoff_meta(h: Handoff) -> dict[str, Any]:
+    """Handoff metadata for tool results. Never carries the body."""
+    return {
+        "id": h.id,
+        "project": h.project,
+        "slug": h.slug,
+        "title": h.title,
+        "assignee": h.assignee,
+        "status": _enum_value(h.status),
+        "version": h.version,
+        "parent_id": h.parent_id,
+        "task_ids": list(h.task_ids),
+        "created_by": h.created_by,
+        "created_at": h.created_at.isoformat(),
+        "updated_at": h.updated_at.isoformat(),
+    }
+
+
+def _handoff_report(r: HandoffReport) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "handoff_id": r.handoff_id,
+        "agent": r.agent,
+        "text": r.text,
+        "status_after": _enum_value(r.status_after) if r.status_after else None,
+        "created_at": r.created_at.isoformat(),
+    }
+
+
+HANDOFF_NOT_FOUND = "NOT_FOUND"
+HANDOFF_CONFLICT = "CONFLICT"
+HANDOFF_INVALID = "INVALID"
+
+
+def _handoff_error(message: str, code: str) -> dict[str, Any]:
+    """An error result with a machine-readable `code` next to the prose."""
+    return {"error": message, "code": code}
+
+
+def _handoff_error_code(message: str) -> str:
+    """Classify a ValueError raised by HandoffService or its storage.
+
+    The service raises plain ValueErrors, so the message is all there is to
+    go on. This is the one place that reads it. A missing parent is a bad
+    argument, not a missing resource, so it is checked before "not found".
+    """
+    if "parent handoff" in message:
+        return HANDOFF_INVALID
+    if "already exists" in message:
+        return HANDOFF_CONFLICT
+    if "not found" in message:
+        return HANDOFF_NOT_FOUND
+    return HANDOFF_INVALID
+
+
+def _handoff_status(value: Any) -> HandoffStatus | None:
+    if value is None or value == "":
+        return None
+    try:
+        return HandoffStatus(value)
+    except ValueError:
+        valid = ", ".join(s.value for s in HandoffStatus)
+        raise ValueError(f"Invalid status {value!r}; expected one of: {valid}") from None
+
+
+def _handoff_project(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        from src.core.project import slugify
+        return slugify(value)
+    return None
+
+
+# Credential the current tool call came in on: "admin-key", "oauth:<client_id>",
+# "stdio", ... Set by run_tool; read when a message is sent so the recipient
+# can see what actually vouched for the self-declared sender user_id.
+_call_auth: ContextVar[str | None] = ContextVar("synatyx_call_auth", default=None)
+
+
+def _auth_from_request(request: Any) -> str:
+    """Name the credential an MCP request arrived with.
+
+    No HTTP request means the stdio transport, where whoever launched the
+    process is the caller. An HTTP request the middleware did not label was
+    let through without auth (AUTH_ADMIN_KEY unset).
+    """
+    if request is None:
+        return "stdio"
+    scope = getattr(request, "scope", None) or {}
+    return str(scope.get(AUTH_SCOPE_KEY) or "unauthenticated")
+
+
+def _message_out(m: Message) -> dict[str, Any]:
+    return {
+        "id": m.id,
+        "from": m.sender_user_id,
+        "from_session": m.sender_session,
+        "sender_auth": m.sender_auth,
+        "to": m.recipient_user_id,
+        "kind": _enum_value(m.kind),
+        "body": m.body,
+        "status": _enum_value(m.status),
+        "parent_id": m.parent_id,
+        "created_at": m.created_at.isoformat(),
+        "delivered_at": m.delivered_at.isoformat() if m.delivered_at else None,
+        "notice": message_notice(m.sender_user_id, m.sender_auth),
+    }
+
+
+def _message_error_code(message: str) -> str:
+    """Classify a ValueError raised by MessageService (same codes as handoffs)."""
+    if message.startswith("unknown recipient") or "not found" in message:
+        return HANDOFF_NOT_FOUND
+    return HANDOFF_INVALID
+
+
+def _message_enum(enum: type[Any], value: Any, field: str) -> Any:
+    if value is None or value == "":
+        return None
+    try:
+        return enum(value)
+    except ValueError:
+        valid = ", ".join(e.value for e in enum)
+        raise ValueError(f"Invalid {field} {value!r}; expected one of: {valid}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +203,9 @@ class SynatyxMCPServer:
             self._skill_svc_cache[key] = SkillService(storage, self._postgres)
         return self._skill_svc_cache[key]
 
-    async def _get_pack_service(self, user_id: str, project: str | None = None):
+    async def _get_pack_service(
+        self, user_id: str, project: str | None = None
+    ) -> PackService:
         """Return a PackService backed by the active project's collection.
 
         Invalidated by context_index so a freshly built code index is picked
@@ -83,9 +223,9 @@ class SynatyxMCPServer:
                 retrieve, storage, l4_storage, self._postgres,
                 relations, skills, index_search,
             )
-        return self._pack_svc_cache[key]
+        return cast("PackService", self._pack_svc_cache[key])
 
-    async def _maybe_index_search(self, storage: QdrantStorage):
+    async def _maybe_index_search(self, storage: QdrantStorage) -> IndexSearchService | None:
         """Return an IndexSearchService when the project has an index
         collection, else None."""
         from src.core.index import IndexSearchService
@@ -103,12 +243,15 @@ class SynatyxMCPServer:
             return None
         return IndexSearchService(storage.scoped(index_collection))
 
-    async def _get_index_services(self, user_id: str, project: str | None = None):
+    async def _get_index_services(
+        self, user_id: str, project: str | None = None
+    ) -> tuple[IndexService, IndexSearchService]:
         """Return (IndexService, IndexSearchService) for the project's code/doc
         index collection. Requires a resolvable project — indexing into a
         default collection would orphan chunks on project rename."""
         from src.core.index import IndexSearchService, IndexService
 
+        slug: str | None
         if project:
             slug = project
         else:
@@ -124,7 +267,7 @@ class SynatyxMCPServer:
                 IndexService(storage, slug),
                 IndexSearchService(storage),
             )
-        return self._index_svc_cache[slug]
+        return cast("tuple[IndexService, IndexSearchService]", self._index_svc_cache[slug])
 
     async def _get_relation_service(
         self, user_id: str, project: str | None = None
@@ -229,8 +372,185 @@ class SynatyxMCPServer:
         )
         return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded}
 
+    async def run_tool(
+        self, name: str, arguments: dict[str, Any], *, auth: str | None = None
+    ) -> dict[str, Any]:
+        """Run one tool exactly as the MCP transport runs it, returning the raw dict.
+
+        Everything that wraps a tool call — token metering, implicit session
+        capture, turning an exception into an `error` result instead of a
+        stack trace — belongs to the call, not to the transport that carried
+        it. Keeping it here is what lets a second transport (the REST API)
+        expose the same tools without either duplicating that wrapper or
+        quietly skipping half of it, which is how a REST caller's spend would
+        otherwise go unmetered.
+        """
+        import json
+        import time
+
+        usage_begin()
+        auth_token = _call_auth.set(auth)
+        failed = False
+        started = time.monotonic()
+        try:
+            result = await self._dispatch(name, arguments)
+        except Exception as exc:
+            logger.exception("Tool %r raised an error", name)
+            # The exception's type rides along so a caller can tell a bad
+            # argument from a backend that fell over. Both arrive here as an
+            # `error` string, and a transport that cannot distinguish them
+            # reports the caller's own typo as an outage.
+            result = {"error": str(exc), "tool": name, "error_type": type(exc).__name__}
+            failed = True
+        finally:
+            _call_auth.reset(auth_token)
+        duration_ms = int((time.monotonic() - started) * 1000)
+
+        # record() swallows its own errors
+        await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
+        payload = json.dumps(result, default=str)
+        input_tokens = estimate_tokens(json.dumps(arguments, default=str))
+        output_tokens = estimate_tokens(payload)
+        embedding_tokens = usage_end()
+        is_error = failed or "error" in result
+        await self._usage.record(
+            user_id=arguments.get("user_id", ""),
+            tool=name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            embedding_tokens=embedding_tokens,
+            project=arguments.get("project") or arguments.get("session_id") or None,
+            error=is_error,
+        )
+        if settings.events.enabled:
+            event_bus.publish(event_bus.build_event(
+                tool=name,
+                user_id=arguments.get("user_id", ""),
+                project=arguments.get("project") or arguments.get("session_id") or None,
+                session_id=arguments.get("session_id"),
+                duration_ms=duration_ms,
+                error=is_error,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                embedding_tokens=embedding_tokens,
+                arguments=arguments,
+                result=result,
+            ))
+        return result
+
+    async def ingest_source(
+        self,
+        user_id: str,
+        project: str,
+        source_id: str,
+        url: str | None = None,
+        text: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        memory_layer: str = "L3",
+        importance: float = 0.8,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Ingest one document, from a URL the server fetches or from text the
+        caller pushes, tagged with the caller's source id so it can be
+        re-synced or retired later as a unit."""
+        from src.models.memory_layer import MemoryLayer as ML
+
+        if (url is None) == (text is None):
+            raise ValueError("exactly one of url or text is required")
+
+        _, _, _, ingest, _ = await self._get_services(user_id, project)
+        meta: dict[str, Any] = {**(metadata or {}), "source_id": source_id}
+
+        if url is not None:
+            result = await ingest.ingest(
+                source=url,
+                user_id=user_id,
+                memory_layer=ML(memory_layer),
+                importance=importance,
+                project=project,
+                session_id=session_id,
+                metadata=meta,
+            )
+        else:
+            # Pushed text has no location of its own, so `source` falls back to
+            # the caller's source id. A url in the metadata is preferred when
+            # there is one: the caller fetched the document itself, and its
+            # address is more useful on the chunk than an opaque id.
+            meta_url = (metadata or {}).get("url")
+            result = await ingest.ingest_text(
+                text=text or "",
+                user_id=user_id,
+                source=meta_url if isinstance(meta_url, str) and meta_url.strip() else source_id,
+                memory_layer=ML(memory_layer),
+                importance=importance,
+                project=project,
+                session_id=session_id,
+                metadata=meta,
+            )
+
+        return {
+            "source_id": source_id,
+            "source": result.source,
+            "chunks_stored": result.chunks_stored,
+            "chunks_failed": result.chunks_failed,
+            "total_chunks": result.total_chunks,
+        }
+
+    async def deprecate_source(
+        self, user_id: str, project: str, source_id: str, reason: str | None = None
+    ) -> dict[str, Any]:
+        """Deprecate every live item that came from one source id."""
+        from src.core.sources import SourceService
+
+        storage, _, _, _, _ = await self._get_services(user_id, project)
+        deprecated = await SourceService(storage).deprecate_source(
+            user_id=user_id, source_id=source_id, reason=reason
+        )
+        return {"source_id": source_id, "deprecated": deprecated}
+
+    async def summarize_session(
+        self,
+        user_id: str,
+        project: str,
+        session_id: str,
+        max_tokens: int = 500,
+        focus: str | None = None,
+    ) -> dict[str, Any]:
+        """Summarize a session's working memory and return the summary.
+
+        The `context_summarize` tool schedules this and returns immediately,
+        which is right for an agent compacting its own context in the
+        background. A caller that needs the summary *in* the turn it is
+        building — a rolling conversation summary about to go into a prompt —
+        has nothing to wait on, so this awaits the same work instead.
+        """
+        from src.core.summarize import SummarizeService
+
+        _, _, store, _, _ = await self._get_services(user_id, project)
+        result = await SummarizeService(self._redis, self._postgres, store=store).summarize(
+            session_id=session_id,
+            user_id=user_id,
+            max_tokens=max_tokens,
+            focus=focus,
+        )
+        return {
+            "summary": result.summary,
+            "key_entities": [
+                entity.model_dump() if hasattr(entity, "model_dump") else entity
+                for entity in result.key_entities
+            ],
+            "tokens_saved": result.tokens_saved,
+        }
+
+    async def erase_user(self, user_id: str) -> dict[str, Any]:
+        """Hard-delete a user's items from every collection, for erasure requests."""
+        from src.core.sources import erase_user as erase
+
+        storage = await self._project_manager.get_l4_storage()
+        return {"user_id": user_id, **await erase(storage, user_id)}
+
     def _register_handlers(self) -> None:
-        @self._server.list_tools()
+        @self._server.list_tools()  # type: ignore[untyped-decorator,no-untyped-call]
         async def list_tools() -> list[Tool]:
             return [
                 Tool(
@@ -241,51 +561,15 @@ class SynatyxMCPServer:
                 for t in TOOL_DEFINITIONS
             ]
 
-        @self._server.call_tool()
+        @self._server.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             import json
-            import time
-            usage_begin()
-            failed = False
-            started = time.monotonic()
             try:
-                result = await self._dispatch(name, arguments)
-            except Exception as exc:
-                logger.exception("Tool %r raised an error", name)
-                result = {"error": str(exc), "tool": name}
-                failed = True
-            duration_ms = int((time.monotonic() - started) * 1000)
-            # Implicit session capture — record() swallows its own errors
-            await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
-            payload = json.dumps(result, default=str)
-            input_tokens = estimate_tokens(json.dumps(arguments, default=str))
-            output_tokens = estimate_tokens(payload)
-            embedding_tokens = usage_end()
-            is_error = failed or "error" in result
-            await self._usage.record(
-                user_id=arguments.get("user_id", ""),
-                tool=name,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                embedding_tokens=embedding_tokens,
-                project=arguments.get("project") or arguments.get("session_id") or None,
-                error=is_error,
-            )
-            if settings.events.enabled:
-                event_bus.publish(event_bus.build_event(
-                    tool=name,
-                    user_id=arguments.get("user_id", ""),
-                    project=arguments.get("project") or arguments.get("session_id") or None,
-                    session_id=arguments.get("session_id"),
-                    duration_ms=duration_ms,
-                    error=is_error,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    embedding_tokens=embedding_tokens,
-                    arguments=arguments,
-                    result=result,
-                ))
-            return [TextContent(type="text", text=payload)]
+                request = self._server.request_context.request
+            except LookupError:
+                request = None
+            result = await self.run_tool(name, arguments, auth=_auth_from_request(request))
+            return [TextContent(type="text", text=json.dumps(result, default=str))]
 
         self._register_resources()
         self._register_prompts()
@@ -297,7 +581,7 @@ class SynatyxMCPServer:
         from mcp.types import Resource
         from pydantic import AnyUrl
 
-        @self._server.list_resources()
+        @self._server.list_resources()  # type: ignore[untyped-decorator,no-untyped-call]
         async def list_resources() -> list[Resource]:
             return [
                 Resource(
@@ -318,7 +602,7 @@ class SynatyxMCPServer:
                 ),
             ]
 
-        @self._server.read_resource()
+        @self._server.read_resource()  # type: ignore[untyped-decorator,no-untyped-call]
         async def read_resource(uri: Any) -> str:
             import json
 
@@ -350,7 +634,7 @@ class SynatyxMCPServer:
             PromptMessage,
         )
 
-        @self._server.list_prompts()
+        @self._server.list_prompts()  # type: ignore[untyped-decorator,no-untyped-call]
         async def list_prompts() -> list[Prompt]:
             return [
                 Prompt(
@@ -374,14 +658,24 @@ class SynatyxMCPServer:
                         "task, with provenance markers."
                     ),
                     arguments=[
-                        PromptArgument(name="query", description="The task to pack context for", required=True),
-                        PromptArgument(name="project", description="Project slug (optional)", required=False),
-                        PromptArgument(name="max_tokens", description="Token budget (default 3000)", required=False),
+                        PromptArgument(
+                            name="query",
+                            description="The task to pack context for",
+                            required=True,
+                        ),
+                        PromptArgument(
+                            name="project", description="Project slug (optional)", required=False
+                        ),
+                        PromptArgument(
+                            name="max_tokens",
+                            description="Token budget (default 3000)",
+                            required=False,
+                        ),
                     ],
                 ),
             ]
 
-        @self._server.get_prompt()
+        @self._server.get_prompt()  # type: ignore[untyped-decorator,no-untyped-call]
         async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
             import json
 
@@ -420,8 +714,154 @@ class SynatyxMCPServer:
                 ],
             )
 
+    async def _dispatch_handoff(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """context_handoff_* tools. Postgres only; failures come back as error dicts."""
+        user_id = args.get("user_id", "")
+        svc = HandoffService(self._postgres)
+        project = _handoff_project(args.get("project"))
+        try:
+            if name == "context_handoff_create":
+                if not project:
+                    return _handoff_error(
+                        "context_handoff_create requires the project argument", HANDOFF_INVALID
+                    )
+                created = await svc.create(
+                    user_id,
+                    project,
+                    args["title"],
+                    args["body"],
+                    assignee=args.get("assignee"),
+                    slug=args.get("slug"),
+                    parent_id=args.get("parent_id"),
+                    status=_handoff_status(args.get("status")),
+                    task_ids=args.get("task_ids"),
+                    created_by=args.get("created_by") or user_id,
+                )
+                return {"handoff": _handoff_meta(created)}
+
+            if name == "context_handoff_get":
+                if not args.get("id") and not (project and args.get("slug")):
+                    return _handoff_error("Provide id, or project and slug", HANDOFF_INVALID)
+                found = await svc.get(
+                    user_id,
+                    args.get("id"),
+                    project=project,
+                    slug=args.get("slug"),
+                    version=args.get("version"),
+                )
+                if found is None:
+                    return _handoff_error("Handoff not found", HANDOFF_NOT_FOUND)
+                handoff, reports = found
+                return {
+                    "handoff": {**_handoff_meta(handoff), "body": handoff.body},
+                    "reports": [_handoff_report(r) for r in reports[:10]],
+                }
+
+            if name in ("context_handoff_list", "context_handoff_mine"):
+                if name == "context_handoff_mine":
+                    handoffs = await svc.mine(user_id, args["assignee"], project=project)
+                else:
+                    handoffs = await svc.list(
+                        user_id,
+                        project=project,
+                        assignee=args.get("assignee"),
+                        status=_handoff_status(args.get("status")),
+                    )
+                return {"handoffs": [_handoff_meta(h) for h in handoffs], "count": len(handoffs)}
+
+            if name == "context_handoff_update":
+                updated = await svc.update(
+                    user_id,
+                    args["id"],
+                    body=args.get("body"),
+                    title=args.get("title"),
+                    status=_handoff_status(args.get("status")),
+                    assignee=args.get("assignee"),
+                    author=args.get("author") or user_id,
+                )
+                if updated is None:
+                    return _handoff_error(
+                        f"Handoff {args['id']!r} not found", HANDOFF_NOT_FOUND
+                    )
+                return {"handoff": _handoff_meta(updated)}
+
+            if name == "context_handoff_report":
+                report = await svc.report(
+                    user_id,
+                    args["id"],
+                    args["agent"],
+                    args["text"],
+                    status=_handoff_status(args.get("status")),
+                )
+                if report is None:
+                    return _handoff_error(
+                        f"Handoff {args['id']!r} not found", HANDOFF_NOT_FOUND
+                    )
+                after = await svc.get(user_id, args["id"])
+                return {
+                    "report": _handoff_report(report),
+                    "handoff": _handoff_meta(after[0]) if after else None,
+                }
+        except ValueError as exc:
+            return _handoff_error(str(exc), _handoff_error_code(str(exc)))
+        except KeyError as exc:
+            return _handoff_error(
+                f"Missing required argument {exc.args[0]!r}", HANDOFF_INVALID
+            )
+        return _handoff_error(f"Unknown handoff tool {name!r}", HANDOFF_INVALID)
+
+    async def _dispatch_message(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """context_message_* tools. Postgres only; failures come back as error dicts."""
+        user_id = str(args.get("user_id") or "").strip()
+        svc = MessageService(self._postgres)
+        try:
+            if not user_id:
+                return _handoff_error("user_id is required", HANDOFF_INVALID)
+            session = args.get("session") or args.get("session_id") or None
+            auth = _call_auth.get()
+            if name == "context_message_send":
+                kind = _message_enum(MessageKind, args.get("kind"), "kind") or MessageKind.NOTE
+                sent = await svc.send(
+                    user_id, args["to"], args["body"], kind,
+                    sender_session=session, sender_auth=auth,
+                )
+                return {"message": _message_out(sent)}
+
+            if name == "context_message_reply":
+                sent = await svc.reply(
+                    user_id, args["message_id"], args["body"],
+                    sender_session=session, sender_auth=auth,
+                )
+                return {"message": _message_out(sent)}
+
+            if name == "context_message_list":
+                box = _message_enum(MessageBox, args.get("box"), "box") or MessageBox.INBOX
+                messages = await svc.list(
+                    user_id,
+                    box,
+                    status=_message_enum(MessageStatus, args.get("status"), "status"),
+                    limit=max(1, min(int(args.get("limit") or 50), 200)),
+                )
+                return {
+                    "box": box.value,
+                    "messages": [_message_out(m) for m in messages],
+                    "count": len(messages),
+                }
+        except ValueError as exc:
+            return _handoff_error(str(exc), _message_error_code(str(exc)))
+        except KeyError as exc:
+            return _handoff_error(
+                f"Missing required argument {exc.args[0]!r}", HANDOFF_INVALID
+            )
+        return _handoff_error(f"Unknown message tool {name!r}", HANDOFF_INVALID)
+
     async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         user_id = args.get("user_id", "")
+
+        if name.startswith("context_handoff_"):
+            return await self._dispatch_handoff(name, args)
+        if name.startswith("context_message_"):
+            return await self._dispatch_message(name, args)
 
         # ── Project management (no storage needed) ──────────────────────────
         if name == "context_set_project":
@@ -429,22 +869,25 @@ class SynatyxMCPServer:
             return {
                 "project": slug,
                 "collection": storage.collection_name,
-                "message": f"Active project set to '{slug}' (collection: '{storage.collection_name}').",
+                "message": (
+                    f"Active project set to '{slug}' "
+                    f"(collection: '{storage.collection_name}')."
+                ),
             }
 
         elif name == "context_get_project":
-            slug = await self._project_manager.get_project(user_id)
-            if slug:
-                return {"project": slug, "collection": f"ctx_{slug}", "suggestion": None}
+            active = await self._project_manager.get_project(user_id)
+            if active:
+                return {"project": active, "collection": f"ctx_{active}", "suggestion": None}
             from src.core.project import _detect_cwd_name
-            suggestion = _detect_cwd_name()
+            detected = _detect_cwd_name()
             return {
                 "project": None,
                 "collection": None,
-                "suggestion": suggestion,
+                "suggestion": detected,
                 "message": (
-                    f"No project set. Detected workspace folder '{suggestion}'. "
-                    f"Call context_set_project with project='{suggestion}' to confirm."
+                    f"No project set. Detected workspace folder '{detected}'. "
+                    f"Call context_set_project with project='{detected}' to confirm."
                 ),
             }
 
@@ -477,25 +920,31 @@ class SynatyxMCPServer:
             user_id, args.get("project")
         )
         _warn: dict[str, Any] = (
-            {"_project_warning": f"No project set. Detected workspace '{suggestion}'. Call context_set_project to confirm."}
+            {
+                "_project_warning": (
+                    f"No project set. Detected workspace '{suggestion}'. "
+                    "Call context_set_project to confirm."
+                )
+            }
             if suggestion else {}
         )
 
         if name == "context_brief":
             l4_storage = await self._project_manager.get_l4_storage()
             brief_svc = BriefService(storage, l4_storage, self._postgres)
-            slug = await self._project_manager.get_project(user_id)
+            active = await self._project_manager.get_project(user_id)
             # Fall back to the active-pointer slug so open_tasks (Postgres,
             # cross-project by nature) is always filtered to one project.
             brief_result = await brief_svc.brief(
                 user_id=user_id,
-                project=args.get("project") or slug,
+                project=args.get("project") or active,
                 session_id=args.get("session_id"),
                 max_tokens=args.get("max_tokens", 2000),
                 recent_days=args.get("recent_days", 7),
+                assignee=args.get("assignee"),
             )
             return {
-                "project": slug,
+                "project": active,
                 "collection": storage.collection_name,
                 **brief_result,
                 **_warn,
@@ -514,16 +963,54 @@ class SynatyxMCPServer:
             return {**pack_result, **_warn}
 
         elif name == "context_index":
-            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
-            index_result = await index_svc.index(
-                source=args["source"],
-                user_id=user_id,
-                force=args.get("force", False),
-                max_files=args.get("max_files", 500),
+            from src.core.index import (
+                SOURCE_NOT_ON_SERVER,
+                SOURCE_NOT_ON_SERVER_HINT,
+                SourceNotOnServerError,
             )
+
+            index_svc, _ = await self._get_index_services(user_id, args.get("project"))
+            try:
+                index_result = await index_svc.index(
+                    source=args["source"],
+                    user_id=user_id,
+                    force=args.get("force", False),
+                    max_files=args.get("max_files", 500),
+                )
+            except SourceNotOnServerError as exc:
+                return {
+                    "error": str(exc),
+                    "code": SOURCE_NOT_ON_SERVER,
+                    "hint": SOURCE_NOT_ON_SERVER_HINT,
+                    **_warn,
+                }
             # A fresh index must be visible to the next context_pack call
             self._pack_svc_cache.pop(storage.collection_name, None)
             return {**index_result.to_dict(), **_warn}
+
+        elif name in ("context_index_push", "context_index_remove"):
+            from src.core.index import validate_push_files, validate_remove_paths
+
+            # Pushers are services indexing someone else's repo; routing by
+            # the shared active-project pointer would file chunks under
+            # whatever project a human last selected.
+            if not args.get("project"):
+                raise ValueError(f"{name} requires the project argument")
+            index_svc, _ = await self._get_index_services(user_id, args["project"])
+            if name == "context_index_push":
+                files = validate_push_files(args.get("files"))
+                push_result = await index_svc.index_content(
+                    user_id, files, force=bool(args.get("force", False))
+                )
+                result: dict[str, Any] = push_result.to_dict()
+            else:
+                paths = validate_remove_paths(args.get("paths"))
+                result = {
+                    "paths_removed": len(paths),
+                    "chunks_deleted": await index_svc.remove_files(user_id, paths),
+                }
+            self._pack_svc_cache.pop(storage.collection_name, None)
+            return result
 
         elif name == "context_index_search":
             _, index_search = await self._get_index_services(user_id, args.get("project"))
@@ -546,15 +1033,17 @@ class SynatyxMCPServer:
             }
 
         elif name == "context_retrieve":
-            requested = [MemoryLayer(l) for l in args.get("memory_layers", [])] or list(MemoryLayer)
+            requested = [
+                MemoryLayer(ly) for ly in args.get("memory_layers", [])
+            ] or list(MemoryLayer)
             top_k = args.get("top_k", 10)
 
             # Split: L4 always comes from ctx_users; everything else from the project collection
-            project_layers = [l for l in requested if l != MemoryLayer.L4]
+            project_layers: list[MemoryLayer] = [ly for ly in requested if ly != MemoryLayer.L4]
             include_l4 = MemoryLayer.L4 in requested
 
             combined_items = []
-            suggested_budget: dict = {}
+            suggested_budget: dict[str, Any] = {}
 
             if project_layers:
                 proj_result = await retrieve.retrieve(
@@ -665,7 +1154,10 @@ class SynatyxMCPServer:
 
             if "content" not in args or "memory_layer" not in args:
                 return {
-                    "error": "Provide either 'items' (batch) or 'content' + 'memory_layer' (single)."
+                    "error": (
+                        "Provide either 'items' (batch) or "
+                        "'content' + 'memory_layer' (single)."
+                    )
                 }
 
             layer = MemoryLayer(args["memory_layer"])
@@ -715,7 +1207,7 @@ class SynatyxMCPServer:
         elif name == "context_ingest":
             from src.models.memory_layer import MemoryLayer as ML
             layer_str = args.get("memory_layer", "L3")
-            result = await ingest.ingest(
+            ingest_result = await ingest.ingest(
                 source=args["source"],
                 user_id=user_id,
                 memory_layer=ML(layer_str),
@@ -724,10 +1216,10 @@ class SynatyxMCPServer:
                 session_id=args.get("session_id"),
             )
             return {
-                "source": result.source,
-                "chunks_stored": result.chunks_stored,
-                "chunks_failed": result.chunks_failed,
-                "total_chunks": result.total_chunks,
+                "source": ingest_result.source,
+                "chunks_stored": ingest_result.chunks_stored,
+                "chunks_failed": ingest_result.chunks_failed,
+                "total_chunks": ingest_result.total_chunks,
                 **_warn,
             }
 
@@ -739,7 +1231,13 @@ class SynatyxMCPServer:
                 project=args.get("project"),
                 session_id=args.get("session_id"),
             )
-            return {"item_id": item_ids[0], "item_ids": item_ids, "embedded": embedded, "checkpoint_name": args["name"], **_warn}
+            return {
+                "item_id": item_ids[0],
+                "item_ids": item_ids,
+                "embedded": embedded,
+                "checkpoint_name": args["name"],
+                **_warn,
+            }
 
         elif name == "context_deprecate":
             item_id = args["item_id"]
@@ -755,7 +1253,7 @@ class SynatyxMCPServer:
                 user_id=user_id,
                 reason=args.get("reason"),
             )
-            result: dict[str, Any] = {"deprecated": True, "item_id": item_id}
+            result = {"deprecated": True, "item_id": item_id}
             if superseded_by:
                 relations = await self._get_relation_service(user_id, args.get("project"))
                 edge, _created = await relations.relate(
@@ -890,12 +1388,12 @@ class SynatyxMCPServer:
         elif name == "context_list":
             from src.models.memory_layer import MemoryLayer as ML
             layer_str = args.get("memory_layer")
-            layer = ML(layer_str) if layer_str else None
+            list_layer = ML(layer_str) if layer_str else None
             # L4 lives in ctx_users — route list calls there when the filter is explicitly L4
-            _list_storage = (await self._get_l4_services())[0] if layer == ML.L4 else storage
+            _list_storage = (await self._get_l4_services())[0] if list_layer == ML.L4 else storage
             items = await _list_storage.list_items(
                 user_id=user_id,
-                memory_layer=layer,
+                memory_layer=list_layer,
                 checkpoints_only=args.get("checkpoints_only", False),
                 include_deprecated=args.get("include_deprecated", False),
                 project=args.get("project"),
@@ -926,9 +1424,16 @@ class SynatyxMCPServer:
                 description=args.get("description", ""),
                 priority=TaskPriority(args.get("priority", "medium")),
                 project=args.get("project"),
+                assignee=args.get("assignee"),
             )
             saved = await self._postgres.task_add(task)
-            return {"task_id": saved.id, "title": saved.title, "status": saved.status, "priority": saved.priority}
+            return {
+                "task_id": saved.id,
+                "title": saved.title,
+                "status": saved.status,
+                "priority": saved.priority,
+                "assignee": saved.assignee,
+            }
 
         elif name == "context_task_list":
             from src.models.task import TaskPriority, TaskStatus
@@ -939,6 +1444,7 @@ class SynatyxMCPServer:
                 status=TaskStatus(status_str) if status_str else None,
                 priority=TaskPriority(priority_str) if priority_str else None,
                 project=args.get("project"),
+                assignee=args.get("assignee"),
                 limit=args.get("limit", 50),
             )
             return {
@@ -950,6 +1456,7 @@ class SynatyxMCPServer:
                         "status": t.status,
                         "priority": t.priority,
                         "project": t.project,
+                        "assignee": t.assignee,
                         "created_at": t.created_at.isoformat(),
                     }
                     for t in tasks
@@ -968,10 +1475,17 @@ class SynatyxMCPServer:
                 priority=TaskPriority(priority_str) if priority_str else None,
                 title=args.get("title"),
                 description=args.get("description"),
+                assignee=args.get("assignee"),
             )
             if not updated:
                 return {"error": f"Task {args['task_id']!r} not found"}
-            return {"task_id": updated.id, "title": updated.title, "status": updated.status, "updated_at": updated.updated_at.isoformat()}
+            return {
+                "task_id": updated.id,
+                "title": updated.title,
+                "status": updated.status,
+                "assignee": updated.assignee,
+                "updated_at": updated.updated_at.isoformat(),
+            }
 
         elif name == "context_skill_store":
             svc = await self._get_skill_service(user_id, args.get("project"))
@@ -1003,20 +1517,20 @@ class SynatyxMCPServer:
 
         elif name == "context_skill_get":
             svc = await self._get_skill_service(user_id, args.get("project"))
-            skill = await svc.get(
+            found_skill = await svc.get(
                 name=args["name"],
                 user_id=user_id,
                 project=args.get("project"),
             )
-            if not skill:
+            if not found_skill:
                 return {"error": f"Skill {args['name']!r} not found"}
             return {
-                "name": skill.name,
-                "slug": skill.slug,
-                "description": skill.description,
-                "content": skill.content,
-                "frontmatter": skill.frontmatter,
-                "project": skill.project,
+                "name": found_skill.name,
+                "slug": found_skill.slug,
+                "description": found_skill.description,
+                "content": found_skill.content,
+                "frontmatter": found_skill.frontmatter,
+                "project": found_skill.project,
             }
 
         elif name == "context_skill_list":
@@ -1028,7 +1542,12 @@ class SynatyxMCPServer:
             )
             return {
                 "skills": [
-                    {"name": s.name, "slug": s.slug, "description": s.description, "project": s.project}
+                    {
+                        "name": s.name,
+                        "slug": s.slug,
+                        "description": s.description,
+                        "project": s.project,
+                    }
                     for s in skills
                 ],
                 "count": len(skills),
@@ -1061,56 +1580,19 @@ class SynatyxMCPServer:
 
         elif name == "context_gc_stats":
             # _get_services returns (storage, retrieve, store, ingest, suggestion)
-            qdrant = storage
             from src.config import settings as _settings
-            from src.core.gc import GarbageCollector, _IMMUNE_LAYERS, _IMMUNE_TYPE
-            from datetime import datetime, timedelta, timezone
+            from src.core.hygiene import GC_STATS_WARN_DAYS, HygieneService
 
-            gc = GarbageCollector(qdrant=qdrant, postgres=self._postgres, settings=_settings.gc)
-            now = datetime.now(timezone.utc)
-            warn_threshold = timedelta(days=14)
-
-            all_items, _ = await qdrant.scan_all_items(include_deprecated=True, limit=1000)
-            total = len(all_items)
-            protected = expiring_soon = deprecated = pending_hard_delete = 0
-
-            for item in all_items:
-                if item.get("is_deprecated"):
-                    deprecated += 1
-                    dep_raw = item.get("deprecated_at")
-                    if dep_raw:
-                        dep_at = datetime.fromisoformat(dep_raw)
-                        if dep_at.tzinfo is None:
-                            dep_at = dep_at.replace(tzinfo=timezone.utc)
-                        if (now - dep_at).days >= _settings.gc.grace_period_days:
-                            pending_hard_delete += 1
-                    continue
-
-                if gc._is_immune(item):
-                    protected += 1
-                    continue
-
-                base_ttl = gc._get_base_ttl(item.get("memory_layer", ""))
-                if base_ttl is None:
-                    protected += 1
-                    continue
-
-                effective_ttl = gc.effective_ttl(base_ttl, item)
-                last_raw = item.get("last_accessed_at") or item.get("created_at")
-                if last_raw:
-                    last = datetime.fromisoformat(last_raw)
-                    if last.tzinfo is None:
-                        last = last.replace(tzinfo=timezone.utc)
-                    remaining = timedelta(days=effective_ttl) - (now - last)
-                    if timedelta(0) < remaining <= warn_threshold:
-                        expiring_soon += 1
+            hygiene = HygieneService(storage, self._postgres, _settings.gc)
+            all_items, _ = await storage.scan_all_items(include_deprecated=True, limit=1000)
+            counts = hygiene.gc_counts(all_items, warn_days=GC_STATS_WARN_DAYS)
 
             return {
-                "total_items": total,
-                "protected": protected,
-                "expiring_soon_14d": expiring_soon,
-                "already_deprecated": deprecated,
-                "pending_hard_delete": pending_hard_delete,
+                "total_items": counts.total,
+                "protected": counts.protected,
+                "expiring_soon_14d": counts.expiring_soon,
+                "already_deprecated": counts.deprecated,
+                "pending_hard_delete": counts.pending_hard_delete,
                 "gc_enabled": _settings.gc.enabled,
                 "l2_base_ttl_days": _settings.gc.l2_base_ttl_days,
                 "l3_base_ttl_days": _settings.gc.l3_base_ttl_days,
@@ -1130,7 +1612,7 @@ class SynatyxMCPServer:
 
         raise ValueError(f"Unknown tool: {name}")
 
-    async def _store_for_user(self, user_id: str):
+    async def _store_for_user(self, user_id: str) -> StoreService:
         """StoreService bound to the user's active project — for trace compaction."""
         _, _, store, _, _ = await self._get_services(user_id)
         return store
@@ -1158,7 +1640,9 @@ class SynatyxMCPServer:
         tracking_task = asyncio.create_task(self.run_tracking_loop())
         try:
             async with stdio_server() as (read_stream, write_stream):
-                await self._server.run(read_stream, write_stream, self._server.create_initialization_options())
+                await self._server.run(
+                    read_stream, write_stream, self._server.create_initialization_options()
+                )
         finally:
             tracking_task.cancel()
 

@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,7 @@ from qdrant_client.models import (
     Range,
 )
 
-from src.core.bm25 import BM25Index, STOP_WORDS
+from src.core.bm25 import STOP_WORDS, BM25Index
 from src.core.chunker import RecursiveChunker
 from src.core.embedder import get_embedder
 from src.core.staleness import _hash_file
@@ -44,8 +44,69 @@ DEFAULT_EXCLUDES = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
     "dist", "build", "target", ".next", ".mypy_cache", ".pytest_cache",
     ".ruff_cache", ".idea", ".vscode",
+    # Dart / Flutter
+    ".dart_tool", "Pods", ".gradle",
 }
-EXCLUDED_FILES = {"uv.lock", "package-lock.json", "yarn.lock", "poetry.lock"}
+EXCLUDED_FILES = {
+    "uv.lock", "package-lock.json", "yarn.lock", "poetry.lock",
+    # Dart / Flutter
+    "pubspec.lock", ".flutter-plugins", ".flutter-plugins-dependencies",
+}
+
+# Limits on one push/remove call (context_index_push / context_index_remove and
+# their REST routes). A pusher splits larger sets into batches; the byte cap
+# keeps one request well under the reverse proxy's body limit.
+PUSH_MAX_FILES = 50
+PUSH_MAX_BYTES = 4 * 1024 * 1024
+REMOVE_MAX_PATHS = 1000
+
+
+def validate_push_files(files: Any) -> list[dict[str, str]]:
+    """Check a push batch and return it as [{path, content}].
+
+    Raises ValueError naming what is wrong, so a transport can answer 400
+    rather than index half a batch."""
+    if not isinstance(files, list) or not files:
+        raise ValueError("files must be a non-empty list of {path, content}")
+    if len(files) > PUSH_MAX_FILES:
+        raise ValueError(
+            f"too many files in one push: {len(files)} > {PUSH_MAX_FILES}; split into batches"
+        )
+    out: list[dict[str, str]] = []
+    total = 0
+    for i, f in enumerate(files):
+        if not isinstance(f, dict):
+            raise ValueError(f"files[{i}] must be an object with path and content")
+        path, content = f.get("path"), f.get("content")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"files[{i}].path must be a non-empty string")
+        if not isinstance(content, str):
+            raise ValueError(f"files[{i}].content must be a string")
+        if ".." in Path(path).parts:
+            raise ValueError(f"files[{i}].path must not contain '..'")
+        total += len(content.encode("utf-8"))
+        out.append({"path": path, "content": content})
+    if total > PUSH_MAX_BYTES:
+        raise ValueError(
+            f"push batch is {total} bytes > {PUSH_MAX_BYTES}; split into batches"
+        )
+    return out
+
+
+def validate_remove_paths(paths: Any) -> list[str]:
+    """Check a remove batch and return the paths, stripped of a leading '/'."""
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("paths must be a non-empty list of strings")
+    if len(paths) > REMOVE_MAX_PATHS:
+        raise ValueError(
+            f"too many paths in one remove: {len(paths)} > {REMOVE_MAX_PATHS}; split into batches"
+        )
+    out: list[str] = []
+    for i, p in enumerate(paths):
+        if not isinstance(p, str) or not p.strip():
+            raise ValueError(f"paths[{i}] must be a non-empty string")
+        out.append(p.strip().lstrip("/"))
+    return out
 
 # Payload schema for ctx_<slug>__index collections. content gets a full-text
 # index so exact identifiers are findable even when dense search misses them.
@@ -73,6 +134,24 @@ def chunk_point_id(slug: str, rel_path: str, chunk_index: int) -> str:
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+SOURCE_NOT_ON_SERVER = "SOURCE_NOT_ON_SERVER"
+
+SOURCE_NOT_ON_SERVER_HINT = (
+    "context_index reads files from the server's own disk, and this path does not exist "
+    "there. This server indexes files pushed from your machine. Install the local indexer "
+    "once with: curl -s -H \"X-Auth-Key: $KEY\" <server>/index/install "
+    "| SYNATYX_AUTH_KEY=$KEY sh  -- or push file contents directly with context_index_push."
+)
+
+
+class SourceNotOnServerError(FileNotFoundError):
+    """context_index was given a path that is not on the server's disk."""
+
+    def __init__(self, source: str) -> None:
+        super().__init__(f"source not found or matched no files: {source}")
+        self.source = source
 
 
 @dataclass
@@ -343,7 +422,7 @@ class IndexService:
             import glob as _glob
             files = [Path(p) for p in _glob.glob(str(src), recursive=True) if Path(p).is_file()]
             if not files:
-                raise FileNotFoundError(f"source not found or matched no files: {source}")
+                raise SourceNotOnServerError(source)
             src = Path(os.path.commonpath([str(f) for f in files]))
 
         candidates = []
@@ -478,7 +557,7 @@ class IndexService:
 
             # Embed only new/changed chunks (compare against stored hashes)
             existing = await self._existing_chunk_hashes(user_id, rel_path)
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             total = len(chunks)
             to_embed: list[int] = []
             for i, c in enumerate(chunks):
@@ -611,7 +690,8 @@ def _extract_identifiers(query: str) -> list[str]:
         return quoted[:_MAX_IDENTIFIERS]
     idents = [
         t for t in _IDENT_RE.findall(query)
-        if t.lower() not in STOP_WORDS and ("_" in t or any(c.isupper() for c in t[1:]) or len(t) > 6)
+        if t.lower() not in STOP_WORDS
+        and ("_" in t or any(c.isupper() for c in t[1:]) or len(t) > 6)
     ]
     idents.sort(key=len, reverse=True)
     return idents[:_MAX_IDENTIFIERS]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -143,7 +144,7 @@ class QdrantStorage:
             await self._client.set_payload(
                 collection_name=self._collection_name,
                 payload=payload,
-                points=ids,
+                points=ids,  # type: ignore[arg-type]  # list[str] is a valid id list; list is invariant
             )
 
     async def delete_by_conditions(self, conditions: list[Any]) -> None:
@@ -274,7 +275,7 @@ class QdrantStorage:
                 FieldCondition(key="type", match=MatchValue(value=type_filter))
             )
 
-        results = await self._client.query_points(
+        response = await self._client.query_points(
             collection_name=self._collection_name,
             query=query_vector,
             query_filter=Filter(must=conditions),
@@ -282,7 +283,7 @@ class QdrantStorage:
             score_threshold=score_threshold,
             with_payload=True,
         )
-        results = results.points
+        results = response.points
 
         items = []
         for r in results:
@@ -354,7 +355,7 @@ class QdrantStorage:
         if not records or records[0].vector is None:
             return None
         vector = records[0].vector
-        return list(vector) if isinstance(vector, list) else None
+        return list(vector) if isinstance(vector, list) else None  # type: ignore[arg-type]  # dense vector is list[float]
 
     async def delete(self, item_id: str) -> None:
         """Delete a single point by ID."""
@@ -374,10 +375,10 @@ class QdrantStorage:
 
     async def touch(self, item_ids: list[str]) -> None:
         """Update last_accessed_at for retrieved items — used by access tracking."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         if not item_ids:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         try:
             await self._client.set_payload(
                 collection_name=self._collection_name,
@@ -389,10 +390,10 @@ class QdrantStorage:
 
     async def deprecate(self, item_id: str, reason: str | None = None) -> None:
         """Mark a point as deprecated by updating its payload in-place."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         payload: dict[str, Any] = {
             "is_deprecated": True,
-            "deprecated_at": datetime.now(timezone.utc).isoformat(),
+            "deprecated_at": datetime.now(UTC).isoformat(),
         }
         if reason:
             payload["deprecated_reason"] = reason
@@ -400,6 +401,49 @@ class QdrantStorage:
             collection_name=self._collection_name,
             payload=payload,
             points=[str(uuid.UUID(item_id))],
+        )
+
+    async def get_item(self, item_id: str) -> dict[str, Any] | None:
+        """Raw payload of one point (plus "_id"), or None if it does not exist.
+
+        No user filter — dashboard/admin use.
+        """
+        try:
+            point_id = str(uuid.UUID(item_id))
+        except ValueError:
+            return None
+        records = await self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not records:
+            return None
+        payload = dict(records[0].payload or {})
+        payload["_id"] = str(records[0].id)
+        return payload
+
+    async def set_pinned(self, item_id: str, pinned: bool) -> None:
+        """Pin or unpin a point by updating its payload in place."""
+        await self._client.set_payload(
+            collection_name=self._collection_name,
+            payload={"is_pinned": pinned},
+            points=[str(uuid.UUID(item_id))],
+        )
+
+    async def undeprecate(self, item_id: str) -> None:
+        """Clear deprecation: is_deprecated false, deprecated_at/reason removed."""
+        point: list[Any] = [str(uuid.UUID(item_id))]
+        await self._client.set_payload(
+            collection_name=self._collection_name,
+            payload={"is_deprecated": False},
+            points=point,
+        )
+        await self._client.delete_payload(
+            collection_name=self._collection_name,
+            keys=["deprecated_at", "deprecated_reason"],
+            points=point,
         )
 
     async def scan_all_items(
@@ -410,7 +454,9 @@ class QdrantStorage:
         offset: str | None = None,
         with_vectors: bool = False,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Scroll ALL items in the collection without user_id filter — for GC/consolidation use only.
+        """Scroll ALL items in the collection without user_id filter.
+
+        For GC/consolidation use only.
 
         Returns (items_payload_list, next_offset) for pagination. With
         with_vectors=True each payload dict also carries its embedding under
