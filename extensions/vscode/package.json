@@ -1,8 +1,8 @@
 {
   "name": "synatyx-indexer",
   "displayName": "Synatyx Indexer",
-  "description": "Keeps your project indexed in a Synatyx context engine — auto-push on save, exact-symbol code search for your AI agents.",
-  "version": "0.2.0",
+  "description": "Keeps your project indexed in a Synatyx context engine — auto-push on save, exact-symbol code search, and a live panel of every MCP call your AI agents make.",
+  "version": "0.3.0",
   "publisher": "tanerincode",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/tanerincode/synatyx" },
@@ -14,8 +14,26 @@
     "commands": [
       { "command": "synatyx.indexNow", "title": "Synatyx: Index Project Now" },
       { "command": "synatyx.setKey", "title": "Synatyx: Set Auth Key" },
-      { "command": "synatyx.status", "title": "Synatyx: Show Index Status" }
+      { "command": "synatyx.status", "title": "Synatyx: Show Index Status" },
+      { "command": "synatyx.callsClear", "title": "Synatyx: Clear Call Monitor", "icon": "$(clear-all)" },
+      { "command": "synatyx.callsReconnect", "title": "Synatyx: Reconnect Call Monitor", "icon": "$(refresh)" }
     ],
+    "viewsContainers": {
+      "panel": [
+        { "id": "synatyxCalls", "title": "Synatyx Calls", "icon": "media/pulse.svg" }
+      ]
+    },
+    "views": {
+      "synatyxCalls": [
+        { "id": "synatyx.calls", "name": "Live MCP Calls" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "synatyx.callsClear", "when": "view == synatyx.calls", "group": "navigation" },
+        { "command": "synatyx.callsReconnect", "when": "view == synatyx.calls", "group": "navigation" }
+      ]
+    },
     "configuration": {
       "title": "Synatyx Indexer",
       "properties": {
@@ -43,6 +61,16 @@
           "type": "boolean",
           "default": true,
           "description": "Run a full diff+push shortly after the workspace opens"
+        },
+        "synatyx.monitorEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream live MCP tool calls from the server into the Synatyx Calls panel"
+        },
+        "synatyx.monitorReplay": {
+          "type": "number",
+          "default": 50,
+          "description": "How many recent calls to backfill when the monitor connects"
         }
       }
     }

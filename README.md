@@ -8,7 +8,7 @@ Not just memory — assembled context. Synatyx stores what your agent learns, in
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-31%20tools-purple)](docs/mcp-tools.md)
+[![MCP](https://img.shields.io/badge/MCP-32%20tools-purple)](docs/mcp-tools.md)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker&logoColor=white)](docker-compose.yml)
 
 </div>
@@ -90,6 +90,9 @@ File-hash staleness detection, type-aware TTL decay, background consolidation, a
 
 **🔖 Checkpoints, tasks, skills**
 Pin decisions as named snapshots, track tasks across sessions, RAG-search agent skill definitions.
+
+**📊 Token spend metering**
+Every tool call is metered — context tokens injected into the agent, argument tokens received, and embedding-API tokens with estimated cost. `context_usage` reports totals grouped by tool, project, or day; the dashboard has a Usage tab.
 
 **🏭 Production-ready**
 Streamable-HTTP transport (stateless — deploys don't strand clients), Docker Compose, Alembic migrations, health checks, admin dashboard.

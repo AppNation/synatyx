@@ -12,6 +12,7 @@ from src.config import settings
 from src.core.alternatives import AlternativesService
 from src.core.brief import BriefService
 from src.core.budget import BudgetManager, estimate_tokens
+from src.core.events import event_bus
 from src.core.handoff import HandoffService
 from src.core.ingest import IngestService
 from src.core.message import AUTH_SCOPE_KEY, MessageService
@@ -385,10 +386,12 @@ class SynatyxMCPServer:
         otherwise go unmetered.
         """
         import json
+        import time
 
         usage_begin()
         auth_token = _call_auth.set(auth)
         failed = False
+        started = time.monotonic()
         try:
             result = await self._dispatch(name, arguments)
         except Exception as exc:
@@ -401,19 +404,38 @@ class SynatyxMCPServer:
             failed = True
         finally:
             _call_auth.reset(auth_token)
+        duration_ms = int((time.monotonic() - started) * 1000)
 
         # record() swallows its own errors
         await self._tracker.record(arguments.get("user_id", ""), name, arguments, result)
         payload = json.dumps(result, default=str)
+        input_tokens = estimate_tokens(json.dumps(arguments, default=str))
+        output_tokens = estimate_tokens(payload)
+        embedding_tokens = usage_end()
+        is_error = failed or "error" in result
         await self._usage.record(
             user_id=arguments.get("user_id", ""),
             tool=name,
-            input_tokens=estimate_tokens(json.dumps(arguments, default=str)),
-            output_tokens=estimate_tokens(payload),
-            embedding_tokens=usage_end(),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            embedding_tokens=embedding_tokens,
             project=arguments.get("project") or arguments.get("session_id") or None,
-            error=failed or "error" in result,
+            error=is_error,
         )
+        if settings.events.enabled:
+            event_bus.publish(event_bus.build_event(
+                tool=name,
+                user_id=arguments.get("user_id", ""),
+                project=arguments.get("project") or arguments.get("session_id") or None,
+                session_id=arguments.get("session_id"),
+                duration_ms=duration_ms,
+                error=is_error,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                embedding_tokens=embedding_tokens,
+                arguments=arguments,
+                result=result,
+            ))
         return result
 
     async def ingest_source(
